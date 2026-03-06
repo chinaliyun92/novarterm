@@ -641,6 +641,8 @@ function applyTerminalAppearanceOptions(): void {
   setTerminalOption('fontFamily', options.fontFamily)
   setTerminalOption('theme', options.theme)
   terminal.refresh?.(0, Math.max(0, terminal.rows - 1))
+  // 字号/行高/字体变化后需重新 fit 并同步 resize，否则视口与滚动条会错位
+  scheduleResizeSyncToBridge({ immediate: true })
 }
 
 function setTerminalOption(key: string, value: unknown): void {

@@ -3,8 +3,10 @@
  * Only active when app.isPackaged; uses native dialogs for user choices.
  */
 import { BrowserWindow, dialog } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import electronUpdater from 'electron-updater'
 import type { AppLogger } from './logger'
+
+const { autoUpdater } = electronUpdater
 
 type GetMainWindow = () => BrowserWindow | null
 

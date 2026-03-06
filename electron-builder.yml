@@ -1,0 +1,21 @@
+appId: com.novarterm.app
+productName: NovarTerm
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: resources/AppIcon.png
+    to: AppIcon.png
+asar: true
+mac:
+  icon: build/icon.icns
+  target:
+    - dmg
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage

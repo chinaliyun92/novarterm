@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NovarTerm — AI-native Desktop Terminal</title>
+    <meta
+      name="description"
+      content="NovarTerm is a desktop terminal for DevOps workflows with local/remote switching, unified file browsing, remote file transfer, tab+pane layouts, and trigger automation."
+    />
+    <link rel="icon" type="image/png" href="./assets/logo.png?v=20260306-1508" />
+    <link rel="stylesheet" href="./site.css" />
+  </head>
+  <body>
+    <div class="bg-layer"></div>
+    <header class="topbar">
+      <div class="brand">
+        <img class="brand-logo" src="./assets/logo.png?v=20260306-1508" alt="NovarTerm Logo" />
+        <span class="brand-text">NovarTerm</span>
+      </div>
+      <nav class="nav-links">
+        <a href="#highlights">Features</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="../README.md">Docs</a>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section class="hero">
+        <p class="eyebrow">OPEN SOURCE · CROSS PLATFORM</p>
+        <h1>Turn Your Terminal into a Unified Workspace</h1>
+        <p class="subtitle">
+          NovarTerm combines instant local/remote switching, a unified visual file browser, remote file transfer, tab+pane workspaces, and custom triggers in one desktop terminal.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="https://github.com" target="_blank" rel="noreferrer">Download Beta</a>
+          <a class="btn btn-ghost" href="../README.md">Documentation</a>
+        </div>
+      </section>
+
+      <section id="highlights" class="panel">
+        <h2>Everything You Need in a Modern Terminal</h2>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <h3>Instant Local and Remote Switching</h3>
+            <p>Move between local shell and remote SSH sessions at any time without losing momentum.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Unified Visual File Browser for Local + Remote</h3>
+            <p>Browse and manage local and remote directories in one consistent file pane.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Remote File Transfer with Drag-and-Drop Upload</h3>
+            <p>Upload and download files on remote servers, and drag files directly from desktop for fast upload.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Multi-Tab + Multi-Pane Workspace</h3>
+            <p>Run parallel tasks cleanly with tabs and split panes, with up to six panes in one tab.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Custom Trigger Automation</h3>
+            <p>Define output-based triggers to auto-send predefined actions for repetitive terminal interactions.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="screenshots" class="panel">
+        <h2>Product Screenshots</h2>
+        <div class="shot-grid">
+          <figure class="shot">
+            <img src="./screenshots/01.png" alt="NovarTerm Screenshot 01" />
+          </figure>
+          <figure class="shot">
+            <img src="./screenshots/02.png" alt="NovarTerm Screenshot 02" />
+          </figure>
+          <figure class="shot">
+            <img src="./screenshots/03.png" alt="NovarTerm Screenshot 03" />
+          </figure>
+          <figure class="shot">
+            <img src="./screenshots/04.png" alt="NovarTerm Screenshot 04" />
+          </figure>
+          <figure class="shot">
+            <img src="./screenshots/05.png" alt="NovarTerm Screenshot 05" />
+          </figure>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>NovarTerm</span>
+      <span>•</span>
+      <span>Made for CLI Power Users</span>
+      <span>•</span>
+      <span id="year"></span>
+    </footer>
+
+    <script>
+      const yearEl = document.getElementById('year')
+      if (yearEl) yearEl.textContent = String(new Date().getFullYear())
+    </script>
+  </body>
+</html>

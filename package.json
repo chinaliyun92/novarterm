@@ -1,0 +1,48 @@
+{
+  "name": "novarterm",
+  "version": "0.1.0",
+  "private": true,
+  "productName": "NovarTerm",
+  "description": "M1 baseline for Electron + Vue3 + TypeScript + Vite",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "icon:mac": "bash scripts/generate-mac-icon.sh",
+    "build": "npm run typecheck && electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "test:build": "rm -rf .test-dist && tsc -p tsconfig.test.json && printf '{\"type\":\"commonjs\"}\\n' > .test-dist/package.json",
+    "test": "npm run -s test:build && (cd .test-dist && node --test)",
+    "dist": "npm run build && electron-builder --publish never",
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never",
+    "dist:dir": "npm run build && electron-builder --dir --publish never"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "node-pty": "^1.1.0",
+    "ssh2": "^1.16.0",
+    "ssh2-sftp-client": "^12.0.1",
+    "vue": "^3.5.13",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0"
+  },
+  "devDependencies": {
+    "@iconify-json/mdi": "^1.2.3",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.13.10",
+    "@types/ssh2": "^1.15.5",
+    "@types/ssh2-sftp-client": "^9.0.6",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "electron": "^34.3.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "sass": "^1.97.3",
+    "typescript": "^5.7.3",
+    "unocss": "^66.6.5",
+    "vite": "^5.4.14",
+    "vue-tsc": "^2.2.0"
+  }
+}

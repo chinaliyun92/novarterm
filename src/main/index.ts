@@ -586,6 +586,11 @@ app.on('before-quit', () => {
   logger.info('app', 'before-quit')
   clearWindowStatePersistTimer()
   clearAutoUpdateCheckTimer()
+  // 不在此处移除 IPC 或关闭 db，否则窗口关闭时渲染进程的 saveSnapshot/saveHistory 会报 "No handler registered"
+})
+
+app.on('will-quit', () => {
+  logger.info('app', 'will-quit')
   clearTerminalIPCHandlers(ipcMain)
   clearSSHIPCHandlers(ipcMain)
   clearServerIPCHandlers(ipcMain)

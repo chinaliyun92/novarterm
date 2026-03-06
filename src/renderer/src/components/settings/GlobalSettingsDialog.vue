@@ -40,6 +40,7 @@ const serverEditorMode = ref<ServerEditorMode>(null)
 const editingServerId = ref<number | null>(null)
 const serverSubmitting = ref(false)
 const serverError = ref<string | null>(null)
+const updateChecking = ref(false)
 
 const serverForm = reactive({
   name: '',
@@ -261,6 +262,55 @@ function onLineHeightBlur(): void {
   const rounded = Math.round(normalized * 100) / 100
   uiSettings.lineHeight.value = rounded
   generalLineHeightDraft.value = String(rounded)
+}
+
+function resolveUpdateApi(): null | UpdateApi {
+  if (window.electronAPI?.update) {
+    return window.electronAPI.update
+  }
+  if (window.__electronAPIBridge?.update) {
+    return window.__electronAPIBridge.update
+  }
+  return null
+}
+
+async function checkForAppUpdates(): Promise<void> {
+  const updateApi = resolveUpdateApi()
+  if (!updateApi) {
+    globalMessage.error(t('settings.update.unavailable'), { replace: true })
+    return
+  }
+
+  updateChecking.value = true
+  try {
+    const checked = await updateApi.check()
+    if (!checked.ok) {
+      throw new Error(checked.error.message)
+    }
+
+    if (!checked.data.hasUpdate) {
+      globalMessage.success(t('settings.update.latest'), { replace: true })
+      return
+    }
+
+    const prompted = await updateApi.promptForUpdate({
+      currentVersion: checked.data.currentVersion,
+      latestVersion: checked.data.latestVersion,
+      latestTag: checked.data.latestTag,
+      releaseUrl: checked.data.releaseUrl,
+    })
+    if (!prompted.ok) {
+      throw new Error(prompted.error.message)
+    }
+
+    if (prompted.data.action === 'update' && prompted.data.openedReleasePage) {
+      globalMessage.info(t('settings.update.opened'), { replace: true })
+    }
+  } catch (error) {
+    globalMessage.info(t('settings.update.latest'), { replace: true })
+  } finally {
+    updateChecking.value = false
+  }
 }
 
 function switchTab(tab: SettingsTab): void {
@@ -501,6 +551,17 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
                 @blur="onLineHeightBlur"
               />
             </label>
+            <div class="general-field general-field--action">
+              <span class="general-field__label">{{ t('settings.general.update') }}</span>
+              <button
+                type="button"
+                class="general-field__action-btn"
+                :disabled="updateChecking"
+                @click="void checkForAppUpdates()"
+              >
+                {{ updateChecking ? t('settings.update.checking') : t('settings.update.check') }}
+              </button>
+            </div>
             <div class="general-shortcuts">
               <div class="shortcut-table">
                 <header class="shortcut-table__head">
@@ -789,6 +850,28 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
   color: #0f172a;
   padding: 0 10px;
   outline: none;
+}
+
+.general-field--action {
+  align-items: center;
+}
+
+.general-field__action-btn {
+  flex: 0 0 auto;
+  height: 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  padding: 0 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.general-field__action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .empty-tip {

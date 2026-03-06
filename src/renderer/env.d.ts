@@ -36,6 +36,14 @@ import type {
   SettingsSetResponse,
 } from '../shared/types/settings'
 import type {
+  UpdateCheckResponse,
+  UpdateOpenReleaseRequest,
+  UpdateOpenReleaseResponse,
+  UpdatePromptRequest,
+  UpdatePromptResponse,
+  UpdateResult,
+} from '../shared/types/update'
+import type {
   SftpGetRequest,
   SftpListItem,
   SftpListRequest,
@@ -121,6 +129,12 @@ declare global {
     set: (key: string, value: string) => Promise<SettingsResult<SettingsSetResponse>>
   }
 
+  interface UpdateApi {
+    check: () => Promise<UpdateResult<UpdateCheckResponse>>
+    promptForUpdate: (request: UpdatePromptRequest) => Promise<UpdateResult<UpdatePromptResponse>>
+    openReleasePage: (request?: UpdateOpenReleaseRequest) => Promise<UpdateResult<UpdateOpenReleaseResponse>>
+  }
+
   interface DialogApi {
     saveFile: (request: DialogSaveFileRequest) => Promise<DialogSaveFileResponse>
   }
@@ -162,6 +176,7 @@ declare global {
     dialog: DialogApi
     log: LogApi
     settings: SettingsApi
+    update: UpdateApi
     localFile: LocalFileApi
     terminal: TerminalApi
   }

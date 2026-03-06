@@ -9,10 +9,16 @@ extraResources:
   - from: resources/AppIcon.png
     to: AppIcon.png
 asar: true
+publish:
+  provider: github
+  owner: chinaliyun92
+  repo: novarterm
 mac:
   icon: build/icon.icns
   target:
     - dmg
+    - zip
+  category: public.app-category.developer-tools
 win:
   target:
     - nsis

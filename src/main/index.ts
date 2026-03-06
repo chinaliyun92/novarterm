@@ -14,6 +14,19 @@ import { clearSSHIPCHandlers, registerSSHIPCHandlers } from './ipc/ssh'
 import { clearTerminalIPCHandlers, registerTerminalIPCHandlers } from './ipc/terminal'
 import { clearDialogIPCHandlers, registerDialogIPCHandlers } from './ipc/dialog'
 import { clearLocalFileIPCHandlers, registerLocalFileIPCHandlers } from './ipc/local-file'
+import {
+  checkForUpdatesWithInstaller,
+  isNativeUpdaterAvailable,
+  setLastCheckWasManual,
+  setupAutoUpdater,
+} from './auto-updater'
+import {
+  checkForUpdates,
+  clearUpdateIPCHandlers,
+  promptForUpdateAndMaybeOpen,
+  registerUpdateIPCHandlers,
+  type UpdateIPCContext,
+} from './ipc/update'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WINDOW_STATE_FILE_NAME = 'window-state.json'
@@ -22,10 +35,20 @@ const WINDOW_DEFAULT_HEIGHT = 800
 const WINDOW_MIN_WIDTH = 960
 const WINDOW_MIN_HEIGHT = 640
 const APP_DISPLAY_NAME = 'NovarTerm'
+const DEV_USER_DATA_DIR_NAME = `${APP_DISPLAY_NAME}-Dev`
 const APP_ICON_FILE_NAME = 'AppIcon.png'
+const UPDATE_REPOSITORY_OWNER = 'chinaliyun92'
+const UPDATE_REPOSITORY_NAME = 'novarterm'
+const UPDATE_RELEASES_PAGE_URL = `https://github.com/${UPDATE_REPOSITORY_OWNER}/${UPDATE_REPOSITORY_NAME}/releases/latest`
+const AUTO_UPDATE_CHECK_DELAY_MS = 12_000
 app.setName(APP_DISPLAY_NAME)
+if (!app.isPackaged) {
+  app.setPath('userData', join(app.getPath('appData'), DEV_USER_DATA_DIR_NAME))
+}
 let mainWindow: BrowserWindow | null = null
 let persistWindowStateTimer: ReturnType<typeof setTimeout> | null = null
+let autoUpdateCheckTimer: ReturnType<typeof setTimeout> | null = null
+let autoUpdateCheckRunning = false
 let db: Database.Database | null = null
 let logger: AppLogger = {
   info: (scope: string, message: string) => console.info(`[INFO][${scope}] ${message}`),
@@ -78,6 +101,90 @@ function clearWindowStatePersistTimer(): void {
     clearTimeout(persistWindowStateTimer)
     persistWindowStateTimer = null
   }
+}
+
+function clearAutoUpdateCheckTimer(): void {
+  if (autoUpdateCheckTimer) {
+    clearTimeout(autoUpdateCheckTimer)
+    autoUpdateCheckTimer = null
+  }
+}
+
+function createUpdateContext(): UpdateIPCContext {
+  return {
+    owner: UPDATE_REPOSITORY_OWNER,
+    repo: UPDATE_REPOSITORY_NAME,
+    currentVersion: app.getVersion(),
+    releasesPageUrl: UPDATE_RELEASES_PAGE_URL,
+    logger,
+  }
+}
+
+async function runAutoUpdateCheck(): Promise<void> {
+  if (!app.isPackaged) {
+    logger.info('update', 'skip auto update check in development mode')
+    return
+  }
+  if (autoUpdateCheckRunning) {
+    logger.info('update', 'skip auto update check because one is already running')
+    return
+  }
+
+  autoUpdateCheckRunning = true
+  try {
+    if (isNativeUpdaterAvailable()) {
+      setLastCheckWasManual(false)
+      await checkForUpdatesWithInstaller()
+      return
+    }
+
+    const checked = await checkForUpdates(createUpdateContext())
+    if (!checked.ok) {
+      logger.warn('update', `auto update check failed: ${checked.error.message}`)
+      return
+    }
+
+    if (!checked.data.hasUpdate) {
+      logger.info('update', `auto update check complete: latest=${checked.data.latestVersion}`)
+      return
+    }
+
+    const targetWindow = mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow
+      : BrowserWindow.getAllWindows()[0] ?? null
+
+    const promptResult = await promptForUpdateAndMaybeOpen(targetWindow, {
+      currentVersion: checked.data.currentVersion,
+      latestVersion: checked.data.latestVersion,
+      latestTag: checked.data.latestTag,
+      releaseUrl: checked.data.releaseUrl,
+    }, UPDATE_RELEASES_PAGE_URL)
+
+    logger.info(
+      'update',
+      `auto update prompt action=${promptResult.action} openedReleasePage=${String(promptResult.openedReleasePage)}`,
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logger.warn('update', `auto update check crashed: ${message}`)
+  } finally {
+    autoUpdateCheckRunning = false
+  }
+}
+
+function scheduleAutoUpdateCheck(): void {
+  if (!app.isPackaged) {
+    logger.info('update', 'skip scheduling auto update check in development mode')
+    return
+  }
+
+  clearAutoUpdateCheckTimer()
+  autoUpdateCheckTimer = setTimeout(() => {
+    autoUpdateCheckTimer = null
+    void runAutoUpdateCheck()
+  }, AUTO_UPDATE_CHECK_DELAY_MS)
+
+  logger.info('update', `auto update check scheduled after ${AUTO_UPDATE_CHECK_DELAY_MS}ms`)
 }
 
 function clampWindowState(rawState: PersistedWindowState): PersistedWindowState {
@@ -231,6 +338,13 @@ function registerIpcHandlers(): void {
   logger.info('ipc', 'registered server IPC handlers')
   registerSettingsIPCHandlers(ipcMain, repositories)
   logger.info('ipc', 'registered settings IPC handlers')
+  if (app.isPackaged) {
+    setupAutoUpdater({ getMainWindow: () => mainWindow, logger })
+  }
+  registerUpdateIPCHandlers(ipcMain, createUpdateContext(), {
+    useNativeUpdater: app.isPackaged,
+  })
+  logger.info('ipc', 'registered update IPC handlers')
 }
 
 function initializeDataLayer(): void {
@@ -442,6 +556,7 @@ app.whenReady().then(() => {
   initializeDataLayer()
   registerIpcHandlers()
   createMainWindow()
+  scheduleAutoUpdateCheck()
 
   app.on('activate', () => {
     logger.info('app', 'activate')
@@ -470,10 +585,12 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   logger.info('app', 'before-quit')
   clearWindowStatePersistTimer()
+  clearAutoUpdateCheckTimer()
   clearTerminalIPCHandlers(ipcMain)
   clearSSHIPCHandlers(ipcMain)
   clearServerIPCHandlers(ipcMain)
   clearSettingsIPCHandlers(ipcMain)
+  clearUpdateIPCHandlers(ipcMain)
   clearDialogIPCHandlers(ipcMain)
   clearLocalFileIPCHandlers(ipcMain)
   clearLogIPCHandlers(ipcMain)

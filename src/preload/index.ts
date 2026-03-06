@@ -10,6 +10,7 @@ import {
   SSH_IPC_CHANNELS,
   TERMINAL_IPC_CHANNELS,
   TERMINAL_IPC_EVENTS,
+  UPDATE_IPC_CHANNELS,
 } from '../shared/ipc/channels'
 import type {
   DialogSaveFileRequest,
@@ -61,6 +62,14 @@ import type {
   SettingsResult,
   SettingsSetResponse,
 } from '../shared/types/settings'
+import type {
+  UpdateCheckResponse,
+  UpdateOpenReleaseRequest,
+  UpdateOpenReleaseResponse,
+  UpdatePromptRequest,
+  UpdatePromptResponse,
+  UpdateResult,
+} from '../shared/types/update'
 import type {
   TerminalCloseRequest,
   TerminalCloseResponse,
@@ -186,6 +195,17 @@ const api = {
       invoke<SettingsResult<SettingsSetResponse>>(SETTINGS_IPC_CHANNELS.set, { key, value }),
   },
 
+  update: {
+    check: () => invoke<UpdateResult<UpdateCheckResponse>>(UPDATE_IPC_CHANNELS.check),
+    promptForUpdate: (request: UpdatePromptRequest) =>
+      invoke<UpdateResult<UpdatePromptResponse>>(UPDATE_IPC_CHANNELS.promptForUpdate, request),
+    openReleasePage: (request?: UpdateOpenReleaseRequest) =>
+      invoke<UpdateResult<UpdateOpenReleaseResponse>>(
+        UPDATE_IPC_CHANNELS.openReleasePage,
+        request ?? {},
+      ),
+  },
+
   localFile: {
     list: (request: LocalFileListRequest) =>
       invoke<LocalFileResult<LocalFileListData>>(LOCAL_FILE_IPC_CHANNELS.list, request),
@@ -271,6 +291,10 @@ function mergeApiBridge(existing: Partial<typeof api> | undefined): typeof api {
     settings: {
       ...(existing?.settings ?? {}),
       ...api.settings,
+    },
+    update: {
+      ...(existing?.update ?? {}),
+      ...api.update,
     },
     localFile: {
       ...(existing?.localFile ?? {}),

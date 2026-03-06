@@ -64,6 +64,15 @@ export const SETTINGS_IPC_CHANNELS = {
 export type SettingsIPCChannel =
   (typeof SETTINGS_IPC_CHANNELS)[keyof typeof SETTINGS_IPC_CHANNELS];
 
+export const UPDATE_IPC_CHANNELS = {
+  check: 'update:check',
+  promptForUpdate: 'update:promptForUpdate',
+  openReleasePage: 'update:openReleasePage',
+} as const;
+
+export type UpdateIPCChannel =
+  (typeof UPDATE_IPC_CHANNELS)[keyof typeof UPDATE_IPC_CHANNELS];
+
 export const DIALOG_IPC_CHANNELS = {
   showSaveDialog: 'dialog:showSaveDialog',
 } as const;

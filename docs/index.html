@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NovarTerm - AI-First Terminal Workspace</title>
+    <meta
+      name="description"
+      content="NovarTerm is an AI-first terminal workspace with integrated AI command bar, structured AI debugging, remote SSH workflow, and unified file transfer."
+    />
+    <link rel="icon" type="image/png" href="./assets/logo.png?v=20260306-1508" />
+    <link rel="stylesheet" href="./site.css" />
+  </head>
+  <body>
+    <div class="bg-layer"></div>
+    <header class="topbar">
+      <div class="brand">
+        <img class="brand-logo" src="./assets/logo.png?v=20260306-1508" alt="NovarTerm Logo" />
+        <span class="brand-text">NovarTerm</span>
+      </div>
+      <nav class="nav-links">
+        <a href="#highlights">Features</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="../README.md">Docs</a>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section class="hero">
+        <p class="eyebrow">OPEN SOURCE · CROSS PLATFORM · AI FIRST</p>
+        <h1>Your AI Copilot for Every Terminal Task</h1>
+        <p class="subtitle">
+          NovarTerm puts AI at the center of terminal work: ask, explain, debug errors, run commands, and manage remote/local operations in one place.
+        </p>
+        <div class="hero-actions">
+          <a
+            class="btn btn-primary"
+            href="https://github.com/chinaliyun92/novarterm/releases"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Download Beta
+          </a>
+          <a class="btn btn-ghost" href="../README.md">Documentation</a>
+        </div>
+        <p class="hero-status">
+          <strong>Test Status:</strong> Verified on macOS. Windows and Linux builds are not fully validated yet.
+        </p>
+      </section>
+
+      <section id="highlights" class="panel">
+        <h2>Everything You Need in a Modern Terminal</h2>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <h3>AI Command Bar at the Center</h3>
+            <p>Use streaming AI chat, explain, run, and insert actions directly in your terminal flow.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Debug with Novar</h3>
+            <p>Detect common error patterns and launch structured AI debugging with key execution context.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Multi-Tab + Multi-Pane Workspace</h3>
+            <p>Run parallel tasks with tabs and split panes, then restore your workspace layout after restart.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Fast Remote Session Workflow</h3>
+            <p>Connect to saved servers from the terminal context menu or use manual SSH commands when needed.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Unified Local + Remote File Pane</h3>
+            <p>Switch one file pane between local and remote sources with a consistent operation model.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Drag-and-Drop with Clear Rules</h3>
+            <p>Drop into shell to insert paths only, or drop into remote file pane to upload files and folders.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Centralized Transfer Center</h3>
+            <p>Track upload and download progress/history from one panel at the top-right of the tab bar.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Trigger Automation + i18n</h3>
+            <p>Define pattern-based trigger rules and use the app in Chinese or English across core workflows.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="screenshots" class="panel">
+        <h2>Product Screenshots</h2>
+        <div class="shot-grid">
+          <figure class="shot">
+            <img src="./screenshots/01.png" alt="NovarTerm Screenshot 01" />
+          </figure>
+          <figure class="shot">
+            <img src="./screenshots/02.png" alt="NovarTerm Screenshot 02" />
+          </figure>
+          <figure class="shot">
+            <img src="./screenshots/03.png" alt="NovarTerm Screenshot 03" />
+          </figure>
+          <figure class="shot">
+            <img src="./screenshots/04.png" alt="NovarTerm Screenshot 04" />
+          </figure>
+          <figure class="shot">
+            <img src="./screenshots/05.png" alt="NovarTerm Screenshot 05" />
+          </figure>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>NovarTerm</span>
+      <span>•</span>
+      <span>Made for CLI Power Users</span>
+      <span>•</span>
+      <span id="year"></span>
+    </footer>
+
+    <script>
+      const yearEl = document.getElementById('year')
+      if (yearEl) yearEl.textContent = String(new Date().getFullYear())
+    </script>
+  </body>
+</html>

@@ -138,6 +138,17 @@ body {
   flex-wrap: wrap;
 }
 
+.hero-status {
+  margin: 12px 0 0;
+  color: #a9b8d3;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.hero-status strong {
+  color: #d9e6ff;
+}
+
 .btn {
   height: 40px;
   padding: 0 16px;

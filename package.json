@@ -1,6 +1,6 @@
 {
   "name": "novarterm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "productName": "NovarTerm",
   "description": "M1 baseline for Electron + Vue3 + TypeScript + Vite",

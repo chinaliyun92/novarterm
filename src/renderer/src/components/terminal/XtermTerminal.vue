@@ -72,6 +72,7 @@ const globalMessage = useGlobalMessage()
 
 let terminal: TerminalLike | null = null
 let fitAddon: { fit?: () => void } | null = null
+let webLinksAddon: { dispose?: () => void } | null = null
 let resizeObserver: ResizeObserver | null = null
 let xtermInputSubscription: { dispose: () => void } | null = null
 let removeBridgeDataListener: (() => void) | null = null
@@ -5332,6 +5333,22 @@ async function bootTerminal(): Promise<void> {
       // Optional addon; skip when not installed.
     }
 
+    try {
+      const webLinksModule = await import('xterm-addon-web-links')
+      const WebLinksAddonCtor = (webLinksModule as { WebLinksAddon?: new (handler?: (event: MouseEvent, uri: string) => void) => { dispose?: () => void } }).WebLinksAddon
+      if (WebLinksAddonCtor) {
+        const shellApi = (window as Window & { electronAPI?: { shell?: { openExternal: (url: string) => Promise<unknown> } }; __electronAPIBridge?: { shell?: { openExternal: (url: string) => Promise<unknown> } } }).electronAPI?.shell ?? (window as Window & { __electronAPIBridge?: { shell?: { openExternal: (url: string) => Promise<unknown> } } }).__electronAPIBridge?.shell
+        webLinksAddon = new WebLinksAddonCtor((event: MouseEvent, uri: string) => {
+          if (event.metaKey || event.ctrlKey) {
+            shellApi?.openExternal(uri).catch(() => {})
+          }
+        })
+        terminal.loadAddon?.(webLinksAddon)
+      }
+    } catch {
+      // Optional addon; skip when not installed.
+    }
+
     xtermInputSubscription = terminal.onData?.((data) => {
       void sendInputToBridge(data)
       if (data.includes('\r') || data.includes('\n')) {
@@ -5581,6 +5598,8 @@ function disposeTerminal(): void {
   resizeObserver?.disconnect()
   resizeObserver = null
   fitAddon = null
+  webLinksAddon?.dispose?.()
+  webLinksAddon = null
   terminal?.dispose()
   terminal = null
 }

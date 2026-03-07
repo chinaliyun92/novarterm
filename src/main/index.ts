@@ -14,6 +14,7 @@ import { clearSSHIPCHandlers, registerSSHIPCHandlers } from './ipc/ssh'
 import { clearTerminalIPCHandlers, registerTerminalIPCHandlers } from './ipc/terminal'
 import { clearDialogIPCHandlers, registerDialogIPCHandlers } from './ipc/dialog'
 import { clearLocalFileIPCHandlers, registerLocalFileIPCHandlers } from './ipc/local-file'
+import { clearShellIPCHandlers, registerShellIPCHandlers } from './ipc/shell'
 import {
   checkForUpdatesWithInstaller,
   isNativeUpdaterAvailable,
@@ -332,6 +333,8 @@ function registerIpcHandlers(): void {
   logger.info('ipc', 'registered terminal IPC handlers')
   registerDialogIPCHandlers(ipcMain)
   logger.info('ipc', 'registered dialog IPC handlers')
+  registerShellIPCHandlers(ipcMain)
+  logger.info('ipc', 'registered shell IPC handlers')
   registerLocalFileIPCHandlers(ipcMain)
   logger.info('ipc', 'registered local-file IPC handlers')
   registerServerIPCHandlers(ipcMain, repositories)
@@ -597,6 +600,7 @@ app.on('will-quit', () => {
   clearSettingsIPCHandlers(ipcMain)
   clearUpdateIPCHandlers(ipcMain)
   clearDialogIPCHandlers(ipcMain)
+  clearShellIPCHandlers(ipcMain)
   clearLocalFileIPCHandlers(ipcMain)
   clearLogIPCHandlers(ipcMain)
   if (db) {

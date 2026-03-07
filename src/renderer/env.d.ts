@@ -139,6 +139,10 @@ declare global {
     saveFile: (request: DialogSaveFileRequest) => Promise<DialogSaveFileResponse>
   }
 
+  interface ShellApi {
+    openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
+  }
+
   interface LogApi {
     reportRendererError: (report: RendererErrorReport) => Promise<void>
   }
@@ -174,6 +178,7 @@ declare global {
     server: ServerApi
     ssh: SshApi
     dialog: DialogApi
+    shell: ShellApi
     log: LogApi
     settings: SettingsApi
     update: UpdateApi

@@ -73,6 +73,13 @@ export const UPDATE_IPC_CHANNELS = {
 export type UpdateIPCChannel =
   (typeof UPDATE_IPC_CHANNELS)[keyof typeof UPDATE_IPC_CHANNELS];
 
+export const SHELL_IPC_CHANNELS = {
+  openExternal: 'shell:openExternal',
+} as const;
+
+export type ShellIPCChannel =
+  (typeof SHELL_IPC_CHANNELS)[keyof typeof SHELL_IPC_CHANNELS];
+
 export const DIALOG_IPC_CHANNELS = {
   showSaveDialog: 'dialog:showSaveDialog',
 } as const;

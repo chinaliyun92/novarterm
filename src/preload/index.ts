@@ -7,6 +7,7 @@ import {
   LOG_IPC_CHANNELS,
   SETTINGS_IPC_CHANNELS,
   SERVER_IPC_CHANNELS,
+  SHELL_IPC_CHANNELS,
   SSH_IPC_CHANNELS,
   TERMINAL_IPC_CHANNELS,
   TERMINAL_IPC_EVENTS,
@@ -183,6 +184,11 @@ const api = {
       invoke<DialogSaveFileResponse>(DIALOG_IPC_CHANNELS.showSaveDialog, request),
   },
 
+  shell: {
+    openExternal: (url: string) =>
+      invoke<{ ok: boolean; error?: string }>(SHELL_IPC_CHANNELS.openExternal, url),
+  },
+
   log: {
     reportRendererError: (report: RendererErrorReport) =>
       invoke<void>(LOG_IPC_CHANNELS.reportRendererError, report),
@@ -283,6 +289,10 @@ function mergeApiBridge(existing: Partial<typeof api> | undefined): typeof api {
     dialog: {
       ...(existing?.dialog ?? {}),
       ...api.dialog,
+    },
+    shell: {
+      ...(existing?.shell ?? {}),
+      ...api.shell,
     },
     log: {
       ...(existing?.log ?? {}),

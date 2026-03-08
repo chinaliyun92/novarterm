@@ -20,6 +20,34 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
+function toErrorDetail(causeValue: unknown): string | undefined {
+  if (causeValue == null) {
+    return undefined;
+  }
+
+  if (causeValue instanceof Error) {
+    const message = causeValue.message.trim();
+    return message || undefined;
+  }
+
+  if (typeof causeValue === "string") {
+    const normalized = causeValue.trim();
+    return normalized || undefined;
+  }
+
+  try {
+    const serialized = JSON.stringify(causeValue);
+    if (typeof serialized === "string" && serialized.trim()) {
+      return serialized;
+    }
+  } catch {
+    // ignore JSON stringify failures and fallback to String conversion.
+  }
+
+  const fallback = String(causeValue).trim();
+  return fallback || undefined;
+}
+
 function inferErrorCode(message: string): SSHErrorCode {
   const lowerMessage = message.toLowerCase();
 
@@ -47,10 +75,11 @@ export function toSSHErrorPayload(
   fallbackCode: SSHErrorCode = "unknown_error",
 ): SSHErrorPayload {
   if (error instanceof SSHServiceError) {
+    const detail = toErrorDetail(error.causeValue);
     return {
       code: error.code,
       message: error.message,
-      detail: error.causeValue instanceof Error ? error.causeValue.message : undefined,
+      detail,
     };
   }
 

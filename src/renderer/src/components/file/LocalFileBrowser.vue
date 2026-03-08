@@ -1,5 +1,12 @@
 <script setup lang="ts">
 import UnifiedFileBrowser, { type UnifiedFileEntry } from './UnifiedFileBrowser.vue'
+import { useI18n } from '../../composables/useI18n'
+
+const i18n = useI18n()
+
+function t(key: string, params?: Record<string, string | number>): string {
+  return i18n.t(key, params)
+}
 
 const props = defineProps<{
   paneSessionId?: string | null
@@ -24,7 +31,7 @@ function resolveLocalFileMethod<K extends keyof LocalFileApi>(methodName: K): Lo
   const method = primary?.[methodName] ?? fallback?.[methodName]
 
   if (typeof method !== 'function') {
-    throw new Error('本地文件功能暂不可用，请重启应用后重试。')
+    throw new Error(t('file.local.error.apiUnavailable'))
   }
 
   return method as LocalFileApi[K]
@@ -34,7 +41,7 @@ async function listLocalPath(path: string): Promise<{ path: string; parentPath: 
   const listMethod = resolveLocalFileMethod('list')
   const result = await listMethod({ path })
   if (!result.ok) {
-    throw new Error(result.error?.message?.trim() || '读取目录失败')
+    throw new Error(result.error?.message?.trim() || t('file.local.error.readDirectoryFailed'))
   }
 
   return {
@@ -67,7 +74,7 @@ async function createLocalFile(currentPath: string, name: string): Promise<void>
       directoryPath: currentPath,
       name,
     }),
-    '新建文件失败',
+    t('file.local.error.createFileFailed'),
   )
 }
 
@@ -78,7 +85,7 @@ async function createLocalDirectory(currentPath: string, name: string): Promise<
       directoryPath: currentPath,
       name,
     }),
-    '新建文件夹失败',
+    t('file.local.error.createDirectoryFailed'),
   )
 }
 
@@ -89,7 +96,7 @@ async function renameLocalEntry(entry: UnifiedFileEntry, nextName: string): Prom
       path: entry.path,
       nextName,
     }),
-    '重命名失败',
+    t('file.local.error.renameFailed'),
   )
 }
 
@@ -99,7 +106,7 @@ async function deleteLocalEntry(entry: UnifiedFileEntry): Promise<void> {
     await deleteMethod({
       path: entry.path,
     }),
-    '删除失败',
+    t('file.local.error.deleteFailed'),
   )
 }
 

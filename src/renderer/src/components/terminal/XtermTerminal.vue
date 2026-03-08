@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   expandHomePathWithKnownBase,
   normalizeSessionCwdValue,
@@ -9,6 +9,7 @@ import {
 import {
   escapeShellPath,
 } from '../../../../shared/utils/terminal-smoke'
+import type { LocalFileListData } from '../../../../shared/types/local-file'
 import { useAppUiSettings } from '../../composables/useAppUiSettings'
 import { useGlobalMessage } from '../../composables/useGlobalMessage'
 import { useI18n } from '../../composables/useI18n'
@@ -58,6 +59,7 @@ const contextMenuState = reactive({
   x: 0,
   y: 0,
 })
+const contextMenuSelectedText = ref('')
 const contextServerSubmenu = ref<null | 'new-tab' | 'new-pane' | 'connect-shell'>(null)
 const contextServerSubmenuDirection = ref<'left' | 'right'>('right')
 const uiSettings = useAppUiSettings()
@@ -93,6 +95,102 @@ let zoomModifierPressed = false
 let pointerInsideTerminalHost = false
 const fontZoomHint = ref('')
 let fontZoomHintTimer: ReturnType<typeof setTimeout> | null = null
+type AIChatMessage =
+  | { role: 'user'; content: string; displayCard?: AIUserDisplayCard }
+  | { role: 'assistant'; content: string; isCommand?: boolean; commandText?: string }
+
+interface AIUserDisplayCardSection {
+  label: string
+  value: string
+}
+
+interface AIUserDisplayCard {
+  title: string
+  sections: AIUserDisplayCardSection[]
+}
+
+type AIModelTarget =
+  | {
+      id: string
+      kind: 'built_in'
+      label: string
+      model: string
+    }
+  | {
+      id: string
+      kind: 'user_custom'
+      label: string
+      model: string
+      apiUrl: string
+      apiKey: string
+    }
+
+interface AIUserPlatformConfig {
+  id: number
+  platformName: string
+  apiUrl: string
+  apiKey: string
+  model: string
+}
+
+type AIResponseLanguage = 'en' | 'zh-CN' | 'ja' | 'ko' | 'ru' | 'ar' | 'hi'
+
+const AI_COMMAND_MARKER = '<COMMAND>'
+const AI_COMMAND_BAR_HISTORY_MAX_MESSAGES = 50
+const AI_COMMAND_BAR_HISTORY_KEY_PREFIX = 'ai.commandBar.history.'
+const AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES = 2
+const AI_PLATFORMS_KEY = 'ai.platforms'
+const AI_SELECTED_MODEL_KEY = 'ai.commandBar.selectedModel'
+const AI_RESPONSE_LANGUAGE_KEY = 'ai.commandBar.responseLanguage'
+const AI_PROXY_BASE_URL_KEY = 'ai.proxy.baseUrl'
+const AI_PROXY_INSTALLATION_ID_KEY = 'ai.proxy.installationId'
+const AI_PROXY_CLIENT_TOKEN_KEY = 'ai.proxy.clientToken'
+const AI_BUILT_IN_MODEL_TARGET_ID = 'built_in_default'
+const AI_BUILT_IN_MODEL_NAME = 'deepseek-chat'
+const AI_PROXY_BASE_URL_DEFAULT_DEV = 'http://127.0.0.1:8787'
+const AI_PROXY_BASE_URL_DEFAULT_PROD = 'https://novarterm.lanshansoft.com'
+const AI_PROXY_BASE_URL_DEFAULT = resolveAIProxyBaseUrlDefault()
+const AI_RESPONSE_LANGUAGE_DEFAULT: AIResponseLanguage = 'en'
+const OPEN_SETTINGS_EVENT = 'novarterm:open-settings'
+const SHOW_AI_RESPONSE_LANGUAGE_DEBUG = import.meta.env.DEV
+const AI_COMMAND_BAR_DEBUG_LOG_ENABLED = import.meta.env.DEV
+const TERMINAL_DEBUG_HINT_COOLDOWN_MS = 45_000
+const TERMINAL_DEBUG_CONTEXT_MAX_LINES = 30
+const TERMINAL_DEBUG_CONTEXT_MAX_CHARS = 10_000
+const TERMINAL_DEBUG_HINT_PATTERNS: RegExp[] = [
+  /\berror:/i,
+  /\bfatal:/i,
+  /\bexception\b/i,
+  /\btraceback\b/i,
+  /\bpanic:/i,
+  /\bcommand not found\b/i,
+  /\bpermission denied\b/i,
+  /\bsegmentation fault\b/i,
+  /\bcannot find module\b/i,
+  /\bfailed with exit code\b/i,
+  /\bexit status\s*[1-9]\d*\b/i,
+  /\bnpm ERR!/i,
+]
+
+const aiCommandBarVisible = ref(false)
+const aiCommandBarInput = ref('')
+const aiCommandBarMessages = ref<AIChatMessage[]>([])
+const aiCommandBarStreamingReply = ref('')
+const aiCommandBarLoading = ref(false)
+const aiCommandBarLastErrorCode = ref<string | null>(null)
+const aiModelTargets = ref<AIModelTarget[]>([getBuiltInModelTarget()])
+const aiSelectedModelTargetId = ref<string>(AI_BUILT_IN_MODEL_TARGET_ID)
+const aiCommandBarInputEl = ref<HTMLTextAreaElement | null>(null)
+const aiCommandBarContentEl = ref<HTMLDivElement | null>(null)
+const aiCommandBarEl = ref<HTMLDivElement | null>(null)
+const xtermShellEl = ref<HTMLElement | null>(null)
+const aiCommandBarHeightPx = ref<number | null>(null)
+const aiResponseLanguage = ref<AIResponseLanguage>(AI_RESPONSE_LANGUAGE_DEFAULT)
+const terminalDebugHintVisible = ref(false)
+const terminalDebugHintSessionId = ref('')
+const terminalDebugHintContext = ref('')
+let aiCommandBarResizeCleanup: (() => void) | null = null
+let aiCommandBarRequestSequence = 0
 let delayedCwdRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let backgroundBindTimer: ReturnType<typeof setTimeout> | null = null
 let contextSubmenuHideTimer: ReturnType<typeof setTimeout> | null = null
@@ -130,12 +228,6 @@ const CONTEXT_SUBMENU_HIDE_DELAY_MS = 180
 const BACKGROUND_BIND_BASE_DELAY_MS = 640
 const BACKGROUND_BIND_STEP_DELAY_MS = 260
 const BACKGROUND_BIND_MAX_DELAY_MS = 4200
-const SSH_PASSWORD_AUTOFILL_ARM_TTL_MS = 45_000
-const SSH_PASSWORD_PROMPT_BUFFER_LIMIT = 512
-const sshPasswordAutofillArmedUntilBySession = new Map<string, number>()
-const sshPasswordAutofillConsumedBySession = new Set<string>()
-const sshPasswordPromptBufferBySession = new Map<string, string>()
-const sshPasswordAutofillTargetBySession = new Map<string, { username: string; host: string; secret: string }>()
 const sshAutoConnectCommandIssuedBySession = new Set<string>()
 const sshAutoConnectAttemptBySession = new Map<string, number>()
 const localPromptReadyBySession = new Set<string>()
@@ -148,10 +240,23 @@ const remoteHostStackBySession = new Map<string, string[]>()
 const triggerMatchTailBySession = new Map<string, string>()
 const triggerRuleArmedBySession = new Map<string, boolean>()
 const triggerLastFiredAtBySessionRule = new Map<string, number>()
+const lastTerminalDebugHintAtBySession = new Map<string, number>()
 const TRIGGER_MATCH_TAIL_MAX = 1024
 const TRIGGER_MATCH_MIN_TAIL = 24
 const TRIGGER_FIRE_COOLDOWN_MS = 500
 const NEW_PANE_LOCALHOST_ITEM_ID = 'localhost'
+
+function resolveAIProxyBaseUrlDefault(): string {
+  const envDefault = import.meta.env.DEV
+    ? import.meta.env.VITE_AI_PROXY_BASE_URL_DEV
+    : import.meta.env.VITE_AI_PROXY_BASE_URL_PROD
+  if (typeof envDefault === 'string' && envDefault.trim()) {
+    return envDefault.trim().replace(/\/$/, '')
+  }
+  return import.meta.env.DEV
+    ? AI_PROXY_BASE_URL_DEFAULT_DEV
+    : AI_PROXY_BASE_URL_DEFAULT_PROD
+}
 
 const contextMenuServerList = computed<ServerRecord[]>(() => {
   return [...serverState.servers.value].sort((left, right) => {
@@ -716,6 +821,969 @@ function hideContextMenu(): void {
   contextServerSubmenu.value = null
 }
 
+type AICommandBarSettingsApi = {
+  get: (key: string) => Promise<{ ok: boolean; data?: { setting?: { value?: string } } }>
+  set: (key: string, value: string) => Promise<{ ok: boolean }>
+}
+
+function isAICommandBarSettingsApi(api: unknown): api is AICommandBarSettingsApi {
+  if (api == null || typeof api !== 'object') {
+    return false
+  }
+  return (
+    typeof (api as { get?: unknown }).get === 'function' &&
+    typeof (api as { set?: unknown }).set === 'function'
+  )
+}
+
+function getAICommandBarSettingsApi(): AICommandBarSettingsApi | null {
+  const api = (window as Window & { electronAPI?: { settings?: unknown } }).electronAPI?.settings
+  return isAICommandBarSettingsApi(api) ? api : null
+}
+
+function sanitizeAIUserPlatforms(raw: unknown): AIUserPlatformConfig[] {
+  if (!Array.isArray(raw)) {
+    return []
+  }
+  return raw.filter(
+    (item): item is AIUserPlatformConfig =>
+      item != null &&
+      typeof item === 'object' &&
+      typeof (item as AIUserPlatformConfig).id === 'number' &&
+      typeof (item as AIUserPlatformConfig).platformName === 'string' &&
+      typeof (item as AIUserPlatformConfig).apiUrl === 'string' &&
+      typeof (item as AIUserPlatformConfig).apiKey === 'string' &&
+      typeof (item as AIUserPlatformConfig).model === 'string',
+  )
+}
+
+async function getAISettingValue(key: string): Promise<string | null> {
+  const api = getAICommandBarSettingsApi()
+  if (!api) {
+    return null
+  }
+  try {
+    const res = await api.get(key)
+    if (!res.ok) {
+      return null
+    }
+    const value = res.data?.setting?.value
+    return typeof value === 'string' ? value : null
+  } catch {
+    return null
+  }
+}
+
+async function setAISettingValue(key: string, value: string): Promise<void> {
+  const api = getAICommandBarSettingsApi()
+  if (!api) {
+    return
+  }
+  try {
+    await api.set(key, value)
+  } catch {
+    // ignore persistence failure
+  }
+}
+
+function normalizeAIResponseLanguage(raw: string | null): AIResponseLanguage | null {
+  const normalized = raw?.trim() ?? ''
+  if (
+    normalized === 'en' ||
+    normalized === 'zh-CN' ||
+    normalized === 'ja' ||
+    normalized === 'ko' ||
+    normalized === 'ru' ||
+    normalized === 'ar' ||
+    normalized === 'hi'
+  ) {
+    return normalized
+  }
+  return null
+}
+
+async function getStoredAIResponseLanguage(): Promise<AIResponseLanguage | null> {
+  const raw = await getAISettingValue(AI_RESPONSE_LANGUAGE_KEY)
+  const normalized = normalizeAIResponseLanguage(raw)
+  if (normalized === AI_RESPONSE_LANGUAGE_DEFAULT) {
+    // Backward-compatibility: old builds may persist "en"; treat it as unlocked.
+    return null
+  }
+  return normalized
+}
+
+async function resolveAIResponseLanguage(): Promise<AIResponseLanguage> {
+  return (await getStoredAIResponseLanguage()) ?? AI_RESPONSE_LANGUAGE_DEFAULT
+}
+
+async function refreshAIResponseLanguageDebug(): Promise<void> {
+  if (!SHOW_AI_RESPONSE_LANGUAGE_DEBUG) {
+    return
+  }
+  aiResponseLanguage.value = await resolveAIResponseLanguage()
+}
+
+function resolveAIResponseLanguageLabel(language: AIResponseLanguage): string {
+  switch (language) {
+    case 'zh-CN':
+      return 'Simplified Chinese'
+    case 'ja':
+      return 'Japanese'
+    case 'ko':
+      return 'Korean'
+    case 'ru':
+      return 'Russian'
+    case 'ar':
+      return 'Arabic'
+    case 'hi':
+      return 'Hindi'
+    default:
+      return 'English'
+  }
+}
+
+function detectAIResponseLanguageFromUserText(text: string): AIResponseLanguage | null {
+  const normalized = text.normalize('NFKC').trim()
+  if (!normalized) {
+    return null
+  }
+
+  const count = (pattern: RegExp): number => (normalized.match(pattern) ?? []).length
+
+  const cjk = count(/[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g)
+  const hiragana = count(/[\u3040-\u309F]/g)
+  const katakana = count(/[\u30A0-\u30FF]/g)
+  const hangul = count(/[\uAC00-\uD7AF]/g)
+  const cyrillic = count(/[\u0400-\u04FF]/g)
+  const arabic = count(/[\u0600-\u06FF]/g)
+  const devanagari = count(/[\u0900-\u097F]/g)
+  const latin = count(/[A-Za-z]/g)
+
+  if (hiragana + katakana >= 2) {
+    return 'ja'
+  }
+  if (hangul >= 2) {
+    return 'ko'
+  }
+  if (cyrillic >= 2) {
+    return 'ru'
+  }
+  if (arabic >= 2) {
+    return 'ar'
+  }
+  if (devanagari >= 2) {
+    return 'hi'
+  }
+  if (cjk >= 2) {
+    return 'zh-CN'
+  }
+
+  const nonLatin = cjk + hiragana + katakana + hangul + cyrillic + arabic + devanagari
+  if (latin > 0 && latin >= nonLatin) {
+    return 'en'
+  }
+
+  if (nonLatin > latin && nonLatin >= 2) {
+    // Unknown non-Latin script: keep default behavior for now.
+    return null
+  }
+
+  return null
+}
+
+async function maybeLockAIResponseLanguageFromUserInput(text: string): Promise<void> {
+  const existing = await getStoredAIResponseLanguage()
+  if (existing) {
+    return
+  }
+  const detected = detectAIResponseLanguageFromUserText(text)
+  if (!detected || detected === AI_RESPONSE_LANGUAGE_DEFAULT) {
+    return
+  }
+  await setAISettingValue(AI_RESPONSE_LANGUAGE_KEY, detected)
+}
+
+function normalizeProxyBaseUrl(input: string | null): string {
+  if (!input || !input.trim()) {
+    return AI_PROXY_BASE_URL_DEFAULT
+  }
+  return input.trim().replace(/\/$/, '')
+}
+
+async function resolveAIProxyBaseUrl(): Promise<string> {
+  const configured = await getAISettingValue(AI_PROXY_BASE_URL_KEY)
+  return normalizeProxyBaseUrl(configured)
+}
+
+function getBuiltInModelTarget(): AIModelTarget {
+  return {
+    id: AI_BUILT_IN_MODEL_TARGET_ID,
+    kind: 'built_in',
+    label: t('terminal.aiBar.modelDefault'),
+    model: AI_BUILT_IN_MODEL_NAME,
+  }
+}
+
+function getCurrentAIModelTarget(): AIModelTarget {
+  return (
+    aiModelTargets.value.find((item) => item.id === aiSelectedModelTargetId.value) ??
+    aiModelTargets.value[0] ??
+    getBuiltInModelTarget()
+  )
+}
+
+async function loadAIModelTargets(): Promise<void> {
+  const builtIn = getBuiltInModelTarget()
+  const raw = await getAISettingValue(AI_PLATFORMS_KEY)
+  let userTargets: AIModelTarget[] = []
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      userTargets = sanitizeAIUserPlatforms(parsed)
+        .filter((item) => item.apiUrl.trim() && item.apiKey.trim())
+        .map((item) => {
+          const modelName = item.model.trim() || 'unknown-model'
+          const platformLabel = item.platformName.trim() || t('terminal.aiBar.platformFallback')
+          return {
+            id: `user:${item.id}`,
+            kind: 'user_custom' as const,
+            label: `${platformLabel} · ${modelName}`,
+            model: modelName,
+            apiUrl: item.apiUrl.trim(),
+            apiKey: item.apiKey.trim(),
+          }
+        })
+    } catch {
+      userTargets = []
+    }
+  }
+  aiModelTargets.value = [builtIn, ...userTargets]
+
+  const persistedSelected = (await getAISettingValue(AI_SELECTED_MODEL_KEY))?.trim()
+  const fallbackId = aiModelTargets.value[0]?.id ?? AI_BUILT_IN_MODEL_TARGET_ID
+  const selectedId =
+    persistedSelected && aiModelTargets.value.some((item) => item.id === persistedSelected)
+      ? persistedSelected
+      : fallbackId
+  aiSelectedModelTargetId.value = selectedId
+}
+
+async function onAIModelTargetChange(): Promise<void> {
+  const selectedId = aiSelectedModelTargetId.value
+  await setAISettingValue(AI_SELECTED_MODEL_KEY, selectedId)
+  await refreshAIResponseLanguageDebug()
+}
+
+function generateInstallationId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `inst-${Date.now()}-${Math.random().toString(16).slice(2, 12)}`
+}
+
+async function requestProxyClientToken(baseUrl: string, installationId: string): Promise<string> {
+  const response = await fetch(`${baseUrl}/v1/device/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ installation_id: installationId }),
+  })
+  const rawText = await response.text()
+  type RegisterPayload = {
+    ok?: boolean
+    data?: {
+      client_token?: string
+      retry_after_seconds?: number
+    }
+    error?: {
+      code?: string
+      message?: string
+    }
+  }
+  let payload: RegisterPayload | null = null
+  try {
+    payload = JSON.parse(rawText) as RegisterPayload
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok || !payload?.ok || !payload.data?.client_token) {
+    const errorCode = typeof payload?.error?.code === 'string' ? payload.error.code : undefined
+    const retryAfterSeconds =
+      typeof payload?.data?.retry_after_seconds === 'number' &&
+      Number.isFinite(payload.data.retry_after_seconds) &&
+      payload.data.retry_after_seconds > 0
+        ? Math.ceil(payload.data.retry_after_seconds)
+        : undefined
+    if (errorCode === 'rate_limited') {
+      if (typeof retryAfterSeconds === 'number') {
+        throw new AIRequestError(
+          t('terminal.aiBar.error.rateLimitedWithRetry', { seconds: retryAfterSeconds }),
+          errorCode,
+        )
+      }
+      throw new AIRequestError(t('terminal.aiBar.error.rateLimited'), errorCode)
+    }
+
+    const reason = payload?.error?.message || rawText || `HTTP ${response.status}`
+    throw new AIRequestError(
+      t('terminal.aiBar.error.proxyAuthFailed', {
+        status: response.status,
+        detail: reason,
+      }),
+      errorCode ?? 'proxy_auth_failed',
+    )
+  }
+  return payload.data.client_token
+}
+
+async function ensureProxyClientToken(baseUrl: string): Promise<string> {
+  let installationId = (await getAISettingValue(AI_PROXY_INSTALLATION_ID_KEY))?.trim() || ''
+  if (!installationId) {
+    installationId = generateInstallationId()
+  }
+
+  const cachedToken = (await getAISettingValue(AI_PROXY_CLIENT_TOKEN_KEY))?.trim() || ''
+  if (cachedToken) {
+    return cachedToken
+  }
+
+  const token = await requestProxyClientToken(baseUrl, installationId)
+  await Promise.all([
+    setAISettingValue(AI_PROXY_INSTALLATION_ID_KEY, installationId),
+    setAISettingValue(AI_PROXY_CLIENT_TOKEN_KEY, token),
+  ])
+  return token
+}
+
+function getAICommandBarHistoryKey(sessionId: string): string {
+  return `${AI_COMMAND_BAR_HISTORY_KEY_PREFIX}${sessionId}`
+}
+
+function toAIUserDisplayCard(raw: unknown): AIUserDisplayCard | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined
+  }
+  const candidate = raw as { title?: unknown; sections?: unknown }
+  if (typeof candidate.title !== 'string' || !Array.isArray(candidate.sections)) {
+    return undefined
+  }
+  const sections = candidate.sections.filter(
+    (item): item is AIUserDisplayCardSection =>
+      item != null &&
+      typeof item === 'object' &&
+      typeof (item as { label?: unknown }).label === 'string' &&
+      typeof (item as { value?: unknown }).value === 'string',
+  )
+  if (!sections.length) {
+    return undefined
+  }
+  return {
+    title: candidate.title,
+    sections,
+  }
+}
+
+async function loadAICommandBarHistory(sessionId: string): Promise<void> {
+  const api = getAICommandBarSettingsApi()
+  if (!api) {
+    aiCommandBarMessages.value = []
+    nextTick(() => {
+      scrollAICommandBarContentToBottom()
+      aiCommandBarInputEl.value?.focus()
+    })
+    return
+  }
+  try {
+    const res = await api.get(getAICommandBarHistoryKey(sessionId))
+    const raw = res.ok && res.data?.setting?.value
+    if (!raw) {
+      aiCommandBarMessages.value = []
+    } else {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) {
+        aiCommandBarMessages.value = parsed.filter(
+          (m): m is { role: 'user' | 'assistant'; content: string; isCommand?: boolean; commandText?: string } =>
+            m != null &&
+            typeof m === 'object' &&
+            ((m as { role?: string }).role === 'user' || (m as { role?: string }).role === 'assistant') &&
+            typeof (m as { content?: unknown }).content === 'string',
+        ).map((m) => {
+          if (m.role === 'assistant') {
+            return {
+              role: 'assistant' as const,
+              content: m.content,
+              ...(m.isCommand && typeof m.commandText === 'string' ? { isCommand: true, commandText: m.commandText } : {}),
+            } as AIChatMessage
+          }
+          const userCard = toAIUserDisplayCard((m as { displayCard?: unknown }).displayCard)
+          return {
+            role: 'user' as const,
+            content: m.content,
+            ...(userCard ? { displayCard: userCard } : {}),
+          } as AIChatMessage
+        })
+      } else {
+        aiCommandBarMessages.value = []
+      }
+    }
+  } catch {
+    aiCommandBarMessages.value = []
+  }
+  nextTick(() => {
+    scrollAICommandBarContentToBottom()
+    aiCommandBarInputEl.value?.focus()
+  })
+}
+
+function persistAICommandBarHistory(): void {
+  const api = getAICommandBarSettingsApi()
+  if (!api) {
+    return
+  }
+  const sessionId = props.sessionId
+  if (!sessionId) {
+    return
+  }
+  const payload = aiCommandBarMessages.value.slice(-AI_COMMAND_BAR_HISTORY_MAX_MESSAGES)
+  void api.set(getAICommandBarHistoryKey(sessionId), JSON.stringify(payload))
+}
+
+function clearAICommandBarHistoryForSession(sessionId: string): void {
+  const api = getAICommandBarSettingsApi()
+  if (!api) {
+    return
+  }
+  void api.set(getAICommandBarHistoryKey(sessionId), '[]').catch(() => {})
+}
+
+function closeAICommandBar(): void {
+  aiCommandBarVisible.value = false
+  aiCommandBarInput.value = ''
+  aiCommandBarMessages.value = []
+  aiCommandBarStreamingReply.value = ''
+  aiCommandBarLastErrorCode.value = null
+  nextTick(() => {
+    terminal?.focus?.()
+    terminal?.scrollToBottom?.()
+    setTimeout(() => {
+      terminal?.scrollToBottom?.()
+    }, 50)
+  })
+}
+
+function openAIModelSettings(): void {
+  window.dispatchEvent(
+    new CustomEvent<{ tab: 'ai' }>(OPEN_SETTINGS_EVENT, {
+      detail: { tab: 'ai' },
+    }),
+  )
+}
+
+function onAICommandBarKeydown(event: KeyboardEvent): void {
+  if (event.key === 'k' && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault()
+    event.stopPropagation()
+    closeAICommandBar()
+  }
+}
+
+const AI_COMMAND_BAR_RESIZE_MIN_PX = 100
+
+function startAICommandBarResize(event: MouseEvent): void {
+  event.preventDefault()
+  const startY = event.clientY
+  const startHeight =
+    aiCommandBarHeightPx.value ??
+    aiCommandBarEl.value?.offsetHeight ??
+    Math.max(AI_COMMAND_BAR_RESIZE_MIN_PX, (xtermShellEl.value?.clientHeight ?? 400) * 0.5)
+  const maxHeight = Math.max(AI_COMMAND_BAR_RESIZE_MIN_PX, (xtermShellEl.value?.clientHeight ?? 400) * 0.8)
+
+  function onMove(e: MouseEvent): void {
+    const deltaY = startY - e.clientY
+    const newHeight = Math.min(maxHeight, Math.max(AI_COMMAND_BAR_RESIZE_MIN_PX, startHeight + deltaY))
+    aiCommandBarHeightPx.value = newHeight
+  }
+
+  function onUp(): void {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    aiCommandBarResizeCleanup = null
+  }
+
+  aiCommandBarResizeCleanup = onUp
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+const aiCommandBarHeightStyle = computed(() =>
+  aiCommandBarHeightPx.value != null
+    ? {
+        height: `${aiCommandBarHeightPx.value}px`,
+        maxHeight: 'none',
+        flex: '0 0 auto',
+      }
+    : {},
+)
+
+function scrollAICommandBarContentToBottom(): void {
+  nextTick(() => {
+    const el = aiCommandBarContentEl.value
+    if (el) {
+      el.scrollTop = el.scrollHeight
+    }
+  })
+}
+
+watch(
+  [aiCommandBarStreamingReply, () => aiCommandBarMessages.value.length],
+  () => {
+    if (aiCommandBarVisible.value) {
+      scrollAICommandBarContentToBottom()
+    }
+  },
+  { flush: 'post' },
+)
+
+function parseAssistantReply(content: string): AIChatMessage {
+  const trimmed = content.trimStart()
+  const marker = AI_COMMAND_MARKER + '\n'
+  if (trimmed.startsWith(marker)) {
+    const commandText = trimmed.slice(marker.length).trim().split(/\r?\n/)[0]?.trim() ?? ''
+    return {
+      role: 'assistant',
+      content: commandText,
+      isCommand: true,
+      commandText: commandText || undefined,
+    }
+  }
+  const markerCrlf = AI_COMMAND_MARKER + '\r\n'
+  if (trimmed.startsWith(markerCrlf)) {
+    const commandText = trimmed.slice(markerCrlf.length).trim().split(/\r?\n/)[0]?.trim() ?? ''
+    return {
+      role: 'assistant',
+      content: commandText,
+      isCommand: true,
+      commandText: commandText || undefined,
+    }
+  }
+  return { role: 'assistant', content }
+}
+
+function summarizeAIMessagePayloadForLog(
+  messages: Array<{ role: string; content: string }>,
+): {
+  messageCount: number
+  roleCounts: Record<string, number>
+  totalContentChars: number
+} {
+  const roleCounts: Record<string, number> = {}
+  let totalContentChars = 0
+  for (const message of messages) {
+    roleCounts[message.role] = (roleCounts[message.role] ?? 0) + 1
+    totalContentChars += message.content.length
+  }
+  return {
+    messageCount: messages.length,
+    roleCounts,
+    totalContentChars,
+  }
+}
+
+function logAICommandBarDebug(event: string, detail?: Record<string, unknown>): void {
+  if (!AI_COMMAND_BAR_DEBUG_LOG_ENABLED) {
+    return
+  }
+  const timestamp = new Date().toISOString()
+  if (detail) {
+    console.log(`[ai-command-bar][${timestamp}] ${event}`, detail)
+    return
+  }
+  console.log(`[ai-command-bar][${timestamp}] ${event}`)
+}
+
+class AIRequestError extends Error {
+  code: string | null
+
+  constructor(message: string, code?: string | null) {
+    super(message)
+    this.name = 'AIRequestError'
+    this.code = code ?? null
+  }
+}
+
+async function sendAIMessagesAndStream(messagesForApi?: AIChatMessage[]): Promise<void> {
+  const toSend = messagesForApi ?? aiCommandBarMessages.value
+  const requestId = ++aiCommandBarRequestSequence
+  const payloadSummary = summarizeAIMessagePayloadForLog(
+    toSend.map((item) => ({
+      role: item.role,
+      content: item.content,
+    })),
+  )
+  logAICommandBarDebug('request-start', {
+    requestId,
+    ...payloadSummary,
+  })
+  aiCommandBarLastErrorCode.value = null
+  aiCommandBarStreamingReply.value = ''
+  aiCommandBarLoading.value = true
+  try {
+    await askAIAndStreamResponseWithMessages(toSend, (chunk) => {
+      aiCommandBarStreamingReply.value += chunk
+    }, requestId)
+    const assistantMsg = parseAssistantReply(aiCommandBarStreamingReply.value)
+    aiCommandBarMessages.value = [...aiCommandBarMessages.value, assistantMsg]
+    aiCommandBarStreamingReply.value = ''
+    persistAICommandBarHistory()
+    logAICommandBarDebug('request-success', {
+      requestId,
+      responseChars: assistantMsg.content.length,
+      isCommand: assistantMsg.role === 'assistant' && Boolean(assistantMsg.isCommand),
+    })
+  } catch (err) {
+    aiCommandBarStreamingReply.value =
+      err instanceof Error ? err.message : t('terminal.aiBar.error.default')
+    aiCommandBarLastErrorCode.value = err instanceof AIRequestError ? err.code : null
+    logAICommandBarDebug('request-failed', {
+      requestId,
+      errorCode: err instanceof AIRequestError ? err.code : null,
+      errorType: err instanceof Error ? err.name : typeof err,
+    })
+  } finally {
+    aiCommandBarLoading.value = false
+  }
+}
+
+function onAICommandBarEnter(event: KeyboardEvent): void {
+  if (event.isComposing) {
+    return
+  }
+  event.preventDefault()
+  event.stopPropagation()
+  void submitAICommandBar()
+}
+
+async function submitAICommandBar(): Promise<void> {
+  const query = aiCommandBarInput.value.trim()
+  if (!query) {
+    return
+  }
+  if (aiCommandBarLoading.value) {
+    globalMessage.info(t('terminal.aiBar.busy'), { replace: true })
+    logAICommandBarDebug('submit-blocked-loading', { inputChars: query.length })
+    return
+  }
+  if (aiModelTargets.value.length === 0) {
+    await loadAIModelTargets()
+  }
+  const selectedTarget = getCurrentAIModelTarget()
+  if (selectedTarget.kind === 'built_in') {
+    await maybeLockAIResponseLanguageFromUserInput(query)
+    await refreshAIResponseLanguageDebug()
+  }
+  const userMessage: AIChatMessage = { role: 'user', content: query }
+  const recentContext = aiCommandBarMessages.value.slice(-AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES)
+  aiCommandBarMessages.value = [...aiCommandBarMessages.value, userMessage]
+  aiCommandBarInput.value = ''
+  await sendAIMessagesAndStream([...recentContext, userMessage])
+}
+
+function getAICurrentSessionId(): string | null {
+  return activeBridgeSessionId ?? props.sessionId
+}
+
+async function onAICmdRun(command: string): Promise<void> {
+  const sessionId = getAICurrentSessionId()
+  if (!sessionId) {
+    return
+  }
+  await writeInputToSession(sessionId, command + '\n')
+  closeAICommandBar()
+}
+
+async function onAICmdInsert(command: string): Promise<void> {
+  const sessionId = getAICurrentSessionId()
+  if (!sessionId) {
+    return
+  }
+  await writeInputToSession(sessionId, command)
+  closeAICommandBar()
+}
+
+function onAICmdExpand(command: string): void {
+  if (aiCommandBarLoading.value) {
+    globalMessage.info(t('terminal.aiBar.busy'), { replace: true })
+    logAICommandBarDebug('expand-blocked-loading', { commandChars: command.length })
+    return
+  }
+  const displayMessage: AIChatMessage = {
+    role: 'user',
+    content: command,
+  }
+  const explainApiMessage: AIChatMessage = {
+    role: 'user',
+    content: `Explain this shell command:
+${command}
+
+Output requirements:
+1) Explain what the command does, what each key part/argument means, potential risks, and provide one safer example if applicable.`,
+  }
+  const recentContext = aiCommandBarMessages.value.slice(-AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES)
+  aiCommandBarMessages.value = [...aiCommandBarMessages.value, displayMessage]
+  void sendAIMessagesAndStream([...recentContext, explainApiMessage])
+}
+
+async function streamSSEContent(
+  response: Response,
+  onChunk: (chunk: string) => void,
+): Promise<void> {
+  const reader = response.body?.getReader()
+  if (!reader) {
+    throw new Error(t('terminal.aiBar.error.streamUnavailable'))
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      break
+    }
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed || !trimmed.startsWith('data: ')) {
+        continue
+      }
+      const data = trimmed.slice(6)
+      if (data === '[DONE]') {
+        continue
+      }
+      try {
+        const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
+        const content = json?.choices?.[0]?.delta?.content
+        if (typeof content === 'string') {
+          onChunk(content)
+        }
+      } catch {
+        // ignore malformed chunk
+      }
+    }
+  }
+  if (buffer.trim()) {
+    const trimmed = buffer.trim()
+    if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
+      try {
+        const json = JSON.parse(trimmed.slice(6)) as { choices?: Array<{ delta?: { content?: string } }> }
+        const content = json?.choices?.[0]?.delta?.content
+        if (typeof content === 'string') {
+          onChunk(content)
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+type AIErrorResponsePayload = {
+  error?: {
+    code?: string
+    message?: string
+  }
+  data?: {
+    quota?: {
+      limit?: number
+    }
+    retry_after_seconds?: number
+  }
+}
+
+async function parseAIErrorResponse(response: Response): Promise<{
+  code?: string
+  detail: string
+  quotaLimit?: number
+  retryAfterSeconds?: number
+}> {
+  const text = await response.text()
+  let detail = text || `HTTP ${response.status}`
+  let code: string | undefined
+  let quotaLimit: number | undefined
+  let retryAfterSeconds: number | undefined
+  try {
+    const payload = JSON.parse(text) as AIErrorResponsePayload
+    if (typeof payload?.error?.code === 'string') {
+      code = payload.error.code
+    }
+    if (typeof payload?.error?.message === 'string' && payload.error.message.trim()) {
+      detail = payload.error.message.trim()
+    }
+    const limit = payload?.data?.quota?.limit
+    if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
+      quotaLimit = limit
+    }
+    const retryAfter = payload?.data?.retry_after_seconds
+    if (typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter > 0) {
+      retryAfterSeconds = Math.ceil(retryAfter)
+    }
+  } catch {
+    // keep raw text as detail
+  }
+  if (typeof retryAfterSeconds !== 'number') {
+    const retryAfterHeader = response.headers.get('retry-after')
+    if (retryAfterHeader) {
+      const parsed = Number.parseInt(retryAfterHeader, 10)
+      if (Number.isFinite(parsed) && parsed > 0) {
+        retryAfterSeconds = parsed
+      }
+    }
+  }
+  return { code, detail, quotaLimit, retryAfterSeconds }
+}
+
+function buildAIRequestErrorMessage(
+  status: number,
+  detail: string,
+  code?: string,
+  quotaLimit?: number,
+  retryAfterSeconds?: number,
+): string {
+  if (code === 'quota_exceeded') {
+    if (typeof quotaLimit === 'number') {
+      return t('terminal.aiBar.error.quotaExceededWithLimit', { limit: quotaLimit })
+    }
+    return t('terminal.aiBar.error.quotaExceeded')
+  }
+  if (code === 'rate_limited') {
+    if (typeof retryAfterSeconds === 'number') {
+      return t('terminal.aiBar.error.rateLimitedWithRetry', { seconds: retryAfterSeconds })
+    }
+    return t('terminal.aiBar.error.rateLimited')
+  }
+  return t('terminal.aiBar.error.requestFailed', {
+    status,
+    detail,
+  })
+}
+
+async function requestBuiltInAIStream(
+  messages: Array<{ role: string; content: string }>,
+  onChunk: (chunk: string) => void,
+): Promise<void> {
+  const baseUrl = await resolveAIProxyBaseUrl()
+  let clientToken = await ensureProxyClientToken(baseUrl)
+
+  async function postOnce(token: string): Promise<Response> {
+    return fetch(`${baseUrl}/v1/ai/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        model_source: 'built_in',
+        messages,
+        stream: true,
+      }),
+    })
+  }
+
+  let response = await postOnce(clientToken)
+  if (response.status === 401) {
+    await setAISettingValue(AI_PROXY_CLIENT_TOKEN_KEY, '')
+    clientToken = await ensureProxyClientToken(baseUrl)
+    response = await postOnce(clientToken)
+  }
+
+  if (!response.ok) {
+    const { code, detail, quotaLimit, retryAfterSeconds } = await parseAIErrorResponse(response)
+    throw new AIRequestError(
+      buildAIRequestErrorMessage(response.status, detail, code, quotaLimit, retryAfterSeconds),
+      code,
+    )
+  }
+
+  await streamSSEContent(response, onChunk)
+}
+
+async function requestUserCustomAIStream(
+  target: Extract<AIModelTarget, { kind: 'user_custom' }>,
+  messages: Array<{ role: string; content: string }>,
+  onChunk: (chunk: string) => void,
+): Promise<void> {
+  const baseUrl = target.apiUrl.trim().replace(/\/$/, '')
+  const url = /\/chat\/completions$/i.test(baseUrl)
+    ? baseUrl
+    : `${baseUrl}/chat/completions`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${target.apiKey.trim()}`,
+    },
+    body: JSON.stringify({
+      model: target.model.trim(),
+      messages,
+      stream: true,
+    }),
+  })
+
+  if (!response.ok) {
+    const { code, detail, quotaLimit, retryAfterSeconds } = await parseAIErrorResponse(response)
+    throw new AIRequestError(
+      buildAIRequestErrorMessage(response.status, detail, code, quotaLimit, retryAfterSeconds),
+      code,
+    )
+  }
+
+  await streamSSEContent(response, onChunk)
+}
+
+async function askAIAndStreamResponseWithMessages(
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  onChunk: (chunk: string) => void,
+  requestId?: number,
+): Promise<void> {
+  const responseLanguage = await resolveAIResponseLanguage()
+  const responseLanguageLabel = resolveAIResponseLanguageLabel(responseLanguage)
+  const systemPrompt = `You are a helpful assistant for a terminal user. When the user clearly only needs a single shell command (e.g. "how to list files", "command to do X", "给我一个命令做Y"), reply with exactly two lines:
+Line 1: ${AI_COMMAND_MARKER}
+Line 2: the command only (no explanation, no markdown, no code block).
+Otherwise reply with a full, helpful answer. Do not use ${AI_COMMAND_MARKER} when giving explanations or multi-step instructions.
+
+Rules:
+- Always respond in ${responseLanguageLabel}
+- Commands and code must remain unchanged
+- Keep explanations concise
+- Prefer practical solutions`
+
+  const apiMessages: Array<{ role: string; content: string }> = [
+    { role: 'system', content: systemPrompt },
+    ...messages.map((m) => ({ role: m.role, content: m.content })),
+  ]
+  if (aiModelTargets.value.length === 0) {
+    await loadAIModelTargets()
+  }
+  const selectedTarget = getCurrentAIModelTarget()
+  logAICommandBarDebug('api-messages', {
+    requestId: requestId ?? null,
+    targetId: selectedTarget.id,
+    targetKind: selectedTarget.kind,
+    targetModel: selectedTarget.model,
+    ...summarizeAIMessagePayloadForLog(apiMessages),
+  })
+
+  if (selectedTarget.kind === 'built_in') {
+    await requestBuiltInAIStream(apiMessages, onChunk)
+    return
+  }
+  await requestUserCustomAIStream(selectedTarget, apiMessages, onChunk)
+}
+
 function clearContextSubmenuHideTimer(): void {
   if (!contextSubmenuHideTimer) {
     return
@@ -880,6 +1948,141 @@ function stripAnsiEscapeSequences(data: string): string {
     .replace(/\x1b\][^\u0007]*(?:\u0007|\x1b\\)/g, '')
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/\x1b[@-Z\\-_]/g, '')
+}
+
+function toTerminalDebugPlainText(data: string): string {
+  return stripAnsiEscapeSequences(data).replace(/\r/g, '\n')
+}
+
+function shouldShowTerminalDebugHintForChunk(chunk: string): boolean {
+  const plain = toTerminalDebugPlainText(chunk)
+  if (!plain.trim()) {
+    return false
+  }
+  return TERMINAL_DEBUG_HINT_PATTERNS.some((pattern) => pattern.test(plain))
+}
+
+function pickTerminalDebugOutputLine(context: string): string {
+  const lines = context
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  if (!lines.length) {
+    return ''
+  }
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]
+    if (TERMINAL_DEBUG_HINT_PATTERNS.some((pattern) => pattern.test(line))) {
+      return line
+    }
+  }
+  return lines[lines.length - 1]
+}
+
+function resolveLatestSessionCommand(sessionId: string): string {
+  const history = sessionCommandHistory.get(sessionId) ?? []
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const command = history[index]?.trim()
+    if (command) {
+      return command
+    }
+  }
+  return ''
+}
+
+function buildTerminalDebugContext(sessionId: string, fallbackChunk: string): string {
+  const transcript = sessionCache.getTranscript(sessionId)
+  const source = transcript
+    ? transcript.slice(-TERMINAL_DEBUG_CONTEXT_MAX_CHARS)
+    : fallbackChunk
+  const lines = toTerminalDebugPlainText(source)
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+  if (!lines.length) {
+    return ''
+  }
+  return lines.slice(-TERMINAL_DEBUG_CONTEXT_MAX_LINES).join('\n')
+}
+
+function dismissTerminalDebugHint(): void {
+  terminalDebugHintVisible.value = false
+}
+
+function maybeShowTerminalDebugHint(sessionId: string, chunk: string): void {
+  if (!shouldShowTerminalDebugHintForChunk(chunk)) {
+    return
+  }
+  if (aiCommandBarVisible.value) {
+    return
+  }
+
+  const now = Date.now()
+  const lastAt = lastTerminalDebugHintAtBySession.get(sessionId) ?? 0
+  if (now - lastAt < TERMINAL_DEBUG_HINT_COOLDOWN_MS) {
+    return
+  }
+
+  const context = buildTerminalDebugContext(sessionId, chunk)
+  if (!context) {
+    return
+  }
+  lastTerminalDebugHintAtBySession.set(sessionId, now)
+  terminalDebugHintSessionId.value = sessionId
+  terminalDebugHintContext.value = context
+  terminalDebugHintVisible.value = true
+}
+
+async function onDebugWithNovar(): Promise<void> {
+  const sessionId = terminalDebugHintSessionId.value.trim()
+  const context = terminalDebugHintContext.value.trim()
+  if (!sessionId || !context) {
+    dismissTerminalDebugHint()
+    return
+  }
+  if (aiCommandBarLoading.value) {
+    globalMessage.info(t('terminal.aiBar.busy'), { replace: true })
+    return
+  }
+
+  await ensureAICommandBarReady()
+  const latestCommand = resolveLatestSessionCommand(sessionId)
+  const outputLine = pickTerminalDebugOutputLine(context)
+  const displayMessage: AIChatMessage = {
+    role: 'user',
+    content: t('terminal.debugHint.userMessage'),
+    displayCard: {
+      title: t('terminal.debugHint.userMessage'),
+      sections: [
+        {
+          label: t('terminal.debugHint.terminalOutput'),
+          value: outputLine || t('terminal.debugHint.noOutput'),
+        },
+        {
+          label: t('terminal.debugHint.command'),
+          value: latestCommand || t('terminal.debugHint.noCommand'),
+        },
+      ],
+    },
+  }
+  const debugApiMessage: AIChatMessage = {
+    role: 'user',
+    content: `Debug this terminal output:
+${context}
+
+Last executed command (if available):
+${latestCommand || '(unknown)'}
+
+Output requirements:
+1) Identify the most likely root causes (ranked by likelihood).
+2) Provide concrete troubleshooting steps and executable commands.
+3) Mark risky commands and give safer alternatives when possible.
+4) If information is insufficient, list exactly which command/output is needed next.`,
+  }
+  const recentContext = aiCommandBarMessages.value.slice(-AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES)
+  aiCommandBarMessages.value = [...aiCommandBarMessages.value, displayMessage]
+  dismissTerminalDebugHint()
+  await sendAIMessagesAndStream([...recentContext, debugApiMessage])
 }
 
 function sanitizeTerminalChunkForPromptAnalysis(chunk: string): string {
@@ -1261,13 +2464,6 @@ function resolvePromptCwdHintFromTranscript(sessionId: string): string | null {
   return resolvePromptContextCwd(lines)
 }
 
-function clearSshPasswordAutofillState(sessionId: string): void {
-  sshPasswordAutofillArmedUntilBySession.delete(sessionId)
-  sshPasswordAutofillConsumedBySession.delete(sessionId)
-  sshPasswordPromptBufferBySession.delete(sessionId)
-  sshPasswordAutofillTargetBySession.delete(sessionId)
-}
-
 function clearSplitInheritedCwdSettleTimer(sessionId?: string): void {
   if (sessionId) {
     const timer = splitInheritedCwdSettleTimerBySession.get(sessionId)
@@ -1387,7 +2583,7 @@ function resolveTriggerSendPayload(pattern: string, sendText: string): string {
   return decoded
 }
 
-type AutomatedInputSource = 'user-trigger' | 'system-ssh-password'
+type AutomatedInputSource = 'user-trigger'
 
 async function sendAutomatedInput(
   sessionId: string,
@@ -1443,8 +2639,6 @@ async function maybeRunTerminalTriggers(sessionId: string, chunk: string): Promi
     return
   }
 
-  await maybeAutoFillSshPasswordPrompt(normalizedSessionId, chunk)
-
   const previousTail = triggerMatchTailBySession.get(normalizedSessionId) ?? ''
   const matchWindow = `${previousTail}${strippedChunk}`
   const normalizedMatchWindow = normalizeTriggerMatchText(matchWindow)
@@ -1452,12 +2646,17 @@ async function maybeRunTerminalTriggers(sessionId: string, chunk: string): Promi
   const comparableMatchWindowNoQuotes = stripSimpleQuotes(comparableMatchWindow)
 
   const enabledRules = triggerState.rules.value.filter(
-    (rule) => rule.enabled && normalizeTriggerMatchText(rule.pattern).length > 0 && rule.sendText.length > 0,
+    (rule) =>
+      rule.enabled &&
+      rule.autoSend &&
+      normalizeTriggerMatchText(rule.pattern).length > 0 &&
+      rule.sendText.length > 0,
   )
   if (!enabledRules.length) {
     const ruleDebug = triggerState.rules.value.map((rule) => ({
       id: rule.id,
       enabled: rule.enabled,
+      autoSend: rule.autoSend,
       patternLength: normalizeTriggerMatchText(rule.pattern).length,
       sendLength: rule.sendText.length,
       patternPreview: normalizeTriggerMatchText(rule.pattern).slice(0, 60),
@@ -1489,7 +2688,7 @@ async function maybeRunTerminalTriggers(sessionId: string, chunk: string): Promi
     const normalizedPattern = normalizeTriggerMatchText(rawPattern)
     const comparablePattern = normalizeTriggerComparableText(rawPattern)
     const comparablePatternNoQuotes = stripSimpleQuotes(comparablePattern)
-    if (!rule.enabled || !normalizedPattern || !rule.sendText) {
+    if (!rule.enabled || !rule.autoSend || !normalizedPattern || !rule.sendText) {
       triggerRuleArmedBySession.set(key, true)
       continue
     }
@@ -1505,6 +2704,7 @@ async function maybeRunTerminalTriggers(sessionId: string, chunk: string): Promi
       sessionId: normalizedSessionId,
       ruleId: rule.id,
       enabled: rule.enabled,
+      autoSend: rule.autoSend,
       pattern: rawPattern,
       normalizedPattern,
       sendLength: rule.sendText.length,
@@ -1592,12 +2792,12 @@ async function maybeRunTerminalTriggers(sessionId: string, chunk: string): Promi
 }
 
 function looksLikeSshCommand(command: string): boolean {
-  const normalized = command.trim()
-  if (!normalized) {
+  const tokens = tokenizeShellCommand(command.trim())
+  if (!tokens.length) {
     return false
   }
 
-  return /^(?:command\s+)?(?:exec\s+)?ssh(?:\s|$)/i.test(normalized)
+  return resolveSshExecutableTokenIndex(tokens) >= 0
 }
 
 const SSH_OPTIONS_REQUIRE_VALUE = new Set<string>([
@@ -1622,6 +2822,28 @@ const SSH_OPTIONS_REQUIRE_VALUE = new Set<string>([
   '-W',
   '-w',
 ])
+
+const SSH_COMMAND_WRAPPER_TOKENS = new Set<string>([
+  'command',
+  'doas',
+  'env',
+  'exec',
+  'nohup',
+  'proxychains',
+  'proxychains4',
+  'sshpass',
+  'stdbuf',
+  'sudo',
+  'time',
+])
+
+const SSH_WRAPPER_OPTIONS_REQUIRE_VALUE_BY_COMMAND: Record<string, Set<string>> = {
+  doas: new Set(['-u', '-C']),
+  env: new Set(['-u']),
+  sshpass: new Set(['-p', '-P', '-f', '-d']),
+  stdbuf: new Set(['-i', '-o', '-e']),
+  sudo: new Set(['-u', '-g', '-h', '-p', '-r', '-t']),
+}
 
 function tokenizeShellCommand(command: string): string[] {
   const tokens: string[] = []
@@ -1673,20 +2895,137 @@ function tokenizeShellCommand(command: string): string[] {
   return tokens
 }
 
+function isShellCommandSeparatorToken(token: string): boolean {
+  return token === '|' || token === '||' || token === ';' || token === '&&'
+}
+
+function isEnvironmentAssignmentToken(token: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)
+}
+
+function normalizeExecutableToken(token: string): string {
+  const normalized = token.trim()
+  if (!normalized) {
+    return ''
+  }
+
+  const slashIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+  const executable = slashIndex >= 0 ? normalized.slice(slashIndex + 1) : normalized
+  return executable.toLowerCase()
+}
+
+function resolveWrapperOptionValueMode(
+  wrapperCommand: string | null,
+  optionToken: string,
+): { needsValue: boolean; hasInlineValue: boolean } {
+  const normalizedOption = optionToken.toLowerCase()
+  if (!normalizedOption.startsWith('-')) {
+    return {
+      needsValue: false,
+      hasInlineValue: false,
+    }
+  }
+
+  const wrapperOptions = wrapperCommand ? SSH_WRAPPER_OPTIONS_REQUIRE_VALUE_BY_COMMAND[wrapperCommand] : undefined
+  if (!wrapperOptions || wrapperOptions.size === 0) {
+    return {
+      needsValue: false,
+      hasInlineValue: false,
+    }
+  }
+
+  if (wrapperOptions.has(normalizedOption)) {
+    return {
+      needsValue: true,
+      hasInlineValue: normalizedOption.startsWith('--') ? normalizedOption.includes('=') : false,
+    }
+  }
+
+  for (const expectedOption of wrapperOptions) {
+    if (expectedOption.startsWith('--')) {
+      continue
+    }
+    if (normalizedOption.startsWith(expectedOption) && normalizedOption.length > expectedOption.length) {
+      return {
+        needsValue: true,
+        hasInlineValue: true,
+      }
+    }
+  }
+
+  return {
+    needsValue: false,
+    hasInlineValue: false,
+  }
+}
+
+function resolveSshExecutableTokenIndex(tokens: string[]): number {
+  let index = 0
+  let activeWrapper: string | null = null
+
+  while (index < tokens.length) {
+    const token = tokens[index]
+    if (!token) {
+      index += 1
+      continue
+    }
+
+    if (isShellCommandSeparatorToken(token)) {
+      return -1
+    }
+
+    if (token === '--') {
+      activeWrapper = null
+      index += 1
+      continue
+    }
+
+    if (isEnvironmentAssignmentToken(token)) {
+      index += 1
+      continue
+    }
+
+    const executable = normalizeExecutableToken(token)
+    if (executable === 'ssh') {
+      return index
+    }
+
+    if (SSH_COMMAND_WRAPPER_TOKENS.has(executable)) {
+      activeWrapper = executable
+      index += 1
+      continue
+    }
+
+    if (token.startsWith('-')) {
+      const optionMode = resolveWrapperOptionValueMode(activeWrapper, token)
+      index += 1
+      if (optionMode.needsValue && !optionMode.hasInlineValue && index < tokens.length) {
+        const nextToken = tokens[index]
+        if (nextToken !== '--' && !nextToken.startsWith('-') && !isShellCommandSeparatorToken(nextToken)) {
+          index += 1
+        }
+      }
+      continue
+    }
+
+    return -1
+  }
+
+  return -1
+}
+
 function parseSshHostFromCommand(command: string): string | null {
   const tokens = tokenizeShellCommand(command.trim())
   if (!tokens.length) {
     return null
   }
 
-  let index = 0
-  while (index < tokens.length && (tokens[index] === 'command' || tokens[index] === 'exec')) {
-    index += 1
-  }
-  if (index >= tokens.length || tokens[index].toLowerCase() !== 'ssh') {
+  const sshTokenIndex = resolveSshExecutableTokenIndex(tokens)
+  if (sshTokenIndex < 0) {
     return null
   }
-  index += 1
+
+  let index = sshTokenIndex + 1
 
   let expectOptionValue = false
   let destination: string | null = null
@@ -1910,131 +3249,36 @@ function inferSshHostFromTranscript(sessionId: string): string | null {
   return null
 }
 
-function isMatchingHostToken(serverHost: string, promptHost: string): boolean {
-  const normalizedServerHost = normalizeHostToken(serverHost)
-  const normalizedPromptHost = normalizeHostToken(promptHost)
-  if (!normalizedServerHost || !normalizedPromptHost) {
-    return false
-  }
-
-  if (normalizedServerHost === normalizedPromptHost) {
-    return true
-  }
-
-  if (normalizedServerHost.endsWith(`.${normalizedPromptHost}`)) {
-    return true
-  }
-
-  if (normalizedPromptHost.endsWith(`.${normalizedServerHost}`)) {
-    return true
-  }
-
-  return false
-}
-
-interface SshPasswordAutofillTarget {
-  username: string
-  host: string
-  secret: string
-}
-
-function toSshPasswordAutofillTargetFromServer(server: ServerRecord | null): SshPasswordAutofillTarget | null {
-  if (!server || server.authType !== 'password') {
+function restoreSshHostFromCommandHistory(sessionId: string): string | null {
+  const history = getSessionHistoryList(sessionId)
+  if (!history.length) {
     return null
   }
 
-  const username = server.username.trim()
-  const host = server.host.trim()
-  const secret = server.password?.trim() ?? ''
-  if (!username || !host || !secret) {
-    return null
-  }
-
-  return {
-    username,
-    host,
-    secret,
-  }
-}
-
-function resolveSshPasswordAutofillTarget(sessionId: string): SshPasswordAutofillTarget | null {
-  const explicitTarget = sshPasswordAutofillTargetBySession.get(sessionId)
-  if (explicitTarget) {
-    return explicitTarget
-  }
-
-  return toSshPasswordAutofillTargetFromServer(serverState.getSessionBoundServer(sessionId))
-}
-
-function armSshPasswordAutofill(sessionId: string, command: string, explicitServer?: ServerRecord): void {
-  const target = explicitServer
-    ? toSshPasswordAutofillTargetFromServer(explicitServer)
-    : toSshPasswordAutofillTargetFromServer(serverState.getSessionBoundServer(sessionId))
-  if (!target) {
-    return
-  }
-
-  if (!explicitServer) {
-    const snapshot = serverState.getSessionSnapshot(sessionId)
-    if (
-      !shouldForceLocalTerminalForSession(sessionId) &&
-      (snapshot.state === 'connected' || snapshot.state === 'connecting' || snapshot.state === 'reconnecting')
-    ) {
-      return
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const command = history[index]?.trim() ?? ''
+    if (!command) {
+      continue
     }
+
+    if (/^(?:exit|logout)\s*$/i.test(command)) {
+      return null
+    }
+
+    const host = parseSshHostFromCommand(command)
+    if (!host) {
+      continue
+    }
+
+    pushRemoteHost(sessionId, host)
+    logFileOpenDebug('session sshHost restored from command history', {
+      sessionId,
+      host,
+    })
+    return host
   }
 
-  if (!looksLikeSshCommand(command)) {
-    return
-  }
-
-  const normalizedCommand = command.toLowerCase()
-  const requiredFragments = [target.host.toLowerCase(), `${target.username.toLowerCase()}@${target.host.toLowerCase()}`]
-  if (!requiredFragments.some((fragment) => normalizedCommand.includes(fragment))) {
-    return
-  }
-
-  sshPasswordAutofillTargetBySession.set(sessionId, target)
-  sshPasswordAutofillArmedUntilBySession.set(sessionId, Date.now() + SSH_PASSWORD_AUTOFILL_ARM_TTL_MS)
-  sshPasswordAutofillConsumedBySession.delete(sessionId)
-  sshPasswordPromptBufferBySession.delete(sessionId)
-}
-
-function matchSshPasswordPromptLine(sessionId: string, chunk: string): string | null {
-  const target = resolveSshPasswordAutofillTarget(sessionId)
-  if (!target) {
-    return null
-  }
-
-  const plainChunk = stripAnsiEscapeSequences(chunk).replace(/\r/g, '\n')
-  if (!plainChunk) {
-    return null
-  }
-
-  const previousBuffer = sshPasswordPromptBufferBySession.get(sessionId) ?? ''
-  const merged = `${previousBuffer}${plainChunk}`.slice(-SSH_PASSWORD_PROMPT_BUFFER_LIMIT)
-  sshPasswordPromptBufferBySession.set(sessionId, merged)
-
-  const promptMatch = merged.match(/(?:^|\n)\s*([a-zA-Z0-9._-]+)@([^'\n]+)'s password:\s*$/i)
-  if (!promptMatch) {
-    return null
-  }
-
-  const promptUser = (promptMatch[1] ?? '').trim()
-  const promptHost = (promptMatch[2] ?? '').trim()
-  if (!promptUser || !promptHost) {
-    return null
-  }
-
-  if (promptUser.toLowerCase() !== target.username.toLowerCase()) {
-    return null
-  }
-
-  if (!isMatchingHostToken(target.host, promptHost)) {
-    return null
-  }
-
-  return `${promptUser}@${promptHost}`
+  return null
 }
 
 function resolveSessionDefaultDirectory(sessionId: string): string | null {
@@ -2147,7 +3391,7 @@ function maybeEscapePathLikePaste(text: string): string {
   }
 
   const shouldEscape = window.confirm(
-    '检测到可能是文件路径且包含空格或特殊字符。\n确定：自动做 shell 转义后粘贴\n取消：保持原文粘贴'
+    t('terminal.paste.confirm.escapePathLike')
   )
 
   if (!shouldEscape) {
@@ -2164,9 +3408,7 @@ function preparePastedText(text: string): string | null {
 
   if (/[\r\n]/.test(text)) {
     const lineCount = countTextLines(text)
-    const confirmed = window.confirm(
-      `检测到多行粘贴（${lineCount} 行）。\n确定：继续粘贴\n取消：终止本次粘贴`
-    )
+    const confirmed = window.confirm(t('terminal.paste.confirm.multiline', { count: lineCount }))
     if (!confirmed) {
       return null
     }
@@ -2506,11 +3748,8 @@ function commitSessionCommand(sessionId: string, rawCommand: string): void {
     if (host) {
       pushRemoteHost(sessionId, host)
     }
-    armSshPasswordAutofill(sessionId, command)
   } else if (/^(?:exit|logout)\s*$/i.test(command)) {
     popRemoteHost(sessionId)
-  } else {
-    clearSshPasswordAutofillState(sessionId)
   }
 
   if (!isSessionInSshShell(sessionId)) {
@@ -2606,7 +3845,7 @@ function findHistoryMatch(sessionId: string, keyword: string): string | null {
 }
 
 async function copySelectedText(): Promise<void> {
-  const selectedText = terminal?.getSelection?.() || getFallbackSelectedText()
+  const selectedText = getCurrentTerminalSelectionText()
   if (!selectedText) {
     return
   }
@@ -2618,20 +3857,106 @@ async function copySelectedText(): Promise<void> {
   }
 }
 
+function getCurrentTerminalSelectionText(): string {
+  return terminal?.getSelection?.() || getFallbackSelectedText()
+}
+
+async function ensureAICommandBarReady(): Promise<void> {
+  if (!aiCommandBarVisible.value) {
+    aiCommandBarVisible.value = true
+    aiCommandBarInput.value = ''
+    aiCommandBarStreamingReply.value = ''
+    await Promise.all([
+      loadAIModelTargets(),
+      loadAICommandBarHistory(props.sessionId),
+    ])
+    await refreshAIResponseLanguageDebug()
+    return
+  }
+  await loadAIModelTargets()
+  await refreshAIResponseLanguageDebug()
+  nextTick(() => {
+    aiCommandBarInputEl.value?.focus()
+  })
+}
+
+async function explainSelectedTerminalText(selectedText: string): Promise<void> {
+  const selection = selectedText.trim()
+  if (!selection) {
+    return
+  }
+  if (aiCommandBarLoading.value) {
+    globalMessage.info(t('terminal.aiBar.busy'), { replace: true })
+    logAICommandBarDebug('selection-explain-blocked-loading', {
+      selectedLength: selection.length,
+    })
+    return
+  }
+
+  await ensureAICommandBarReady()
+  const displayMessage: AIChatMessage = {
+    role: 'user',
+    content: selection,
+  }
+  const explainApiMessage: AIChatMessage = {
+    role: 'user',
+    content: `Explain this selected terminal text:
+${selection}
+
+Output requirements:
+1) If the text is a shell command: explain purpose, key arguments, risks, and provide one safer example if applicable.
+2) If the text looks like logs/errors/output: summarize meaning, likely causes, and suggest next troubleshooting steps.`,
+  }
+  const recentContext = aiCommandBarMessages.value.slice(-AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES)
+  aiCommandBarMessages.value = [...aiCommandBarMessages.value, displayMessage]
+  await sendAIMessagesAndStream([...recentContext, explainApiMessage])
+}
+
 async function pasteTextWithGuards(text: string): Promise<void> {
   const prepared = preparePastedText(text)
   if (!prepared) {
     return
   }
 
-  await sendInputToBridge(prepared)
+  await pasteIntoTerminal(prepared)
+}
+
+async function pasteIntoTerminal(text: string): Promise<void> {
+  if (!text) {
+    return
+  }
+
+  const terminalWithPaste = terminal as typeof terminal & { paste?: (data: string) => void }
+  if (terminalWithPaste?.paste) {
+    terminalWithPaste.paste(text)
+    return
+  }
+
+  await sendInputToBridge(text)
+}
+
+async function pasteImagePathsForCli(paths: string[]): Promise<void> {
+  const normalized = paths
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+
+  if (!normalized.length) {
+    return
+  }
+
+  // Keep a trailing space to match CLI attachment parsers (e.g. codex image chips).
+  const insertion = `${normalized.join(' ')} `
+  terminal?.focus?.()
+  await pasteIntoTerminal(insertion)
 }
 
 async function pasteFromClipboard(): Promise<void> {
   try {
     const imagePaths = await resolveImagePathsFromClipboard()
     if (imagePaths.length) {
-      await handleResolvedLocalPaths(imagePaths, 'paste ignored: no absolute file paths found')
+      await handleResolvedLocalPaths(imagePaths, 'paste ignored: no absolute file paths found', {
+        asImagePaste: true,
+      })
       return
     }
 
@@ -2726,7 +4051,16 @@ async function promptCommandHistorySearch(): Promise<void> {
     return
   }
 
-  const keywordInput = window.prompt('历史搜索：输入关键词（留空匹配最近一条）', '')
+  let keywordInput: string | null = ''
+  try {
+    if (typeof window.prompt !== 'function') {
+      throw new Error('prompt() is not supported')
+    }
+    keywordInput = window.prompt(t('terminal.history.searchPrompt'), '')
+  } catch {
+    writeTerminalHistory(t('terminal.history.promptUnsupported'))
+    return
+  }
   if (keywordInput === null) {
     return
   }
@@ -2734,8 +4068,10 @@ async function promptCommandHistorySearch(): Promise<void> {
   const match = findHistoryMatch(sessionId, keywordInput)
   if (!match) {
     const keyword = keywordInput.trim()
-    const label = keyword ? `关键词 "${keyword}"` : '最近命令'
-    writeTerminalHistory(`未找到${label}的匹配项`)
+    const label = keyword
+      ? t('terminal.history.searchKeyword', { keyword })
+      : t('terminal.history.searchRecent')
+    writeTerminalHistory(t('terminal.history.searchNotFound', { label }))
     return
   }
 
@@ -2746,7 +4082,7 @@ async function promptCommandHistorySearch(): Promise<void> {
 async function openCurrentDirectoryInFileBrowser(): Promise<void> {
   const sourceSessionId = props.sessionId.trim()
   if (!sourceSessionId) {
-    writeTerminalError('source session is unavailable')
+    writeTerminalError(t('terminal.fileBrowser.error.sourceSessionUnavailable'))
     logFileOpenDebug('abort: source session is unavailable')
     return
   }
@@ -2764,6 +4100,17 @@ async function openCurrentDirectoryInFileBrowser(): Promise<void> {
     sourceInSshShell,
     hintedCwd: sessionPathSync.cwdBySession[sourceSessionId] ?? null,
   })
+  if (sourceInSshShell) {
+    const matchedServer = resolveServerForSession(sourceSessionId)
+    if (!matchedServer) {
+      writeTerminalError(t('terminal.fileBrowser.error.unsavedSshTarget'))
+      logFileOpenDebug('abort: ssh target is not in saved servers', {
+        sourceSessionId,
+        sshHost: resolveSessionSshHost(sourceSessionId),
+      })
+      return
+    }
+  }
   // Keep the active terminal session untouched. For ssh-in-shell workflows,
   // remote file browser must use an isolated helper session for SFTP calls.
   const fileBrowserSourceSessionId = sourceInSshShell
@@ -2823,7 +4170,7 @@ async function openCurrentDirectoryInFileBrowser(): Promise<void> {
     hintedCwd: sessionPathSync.cwdBySession[sourceSessionId] ?? null,
   })
   if (!cwd) {
-    writeTerminalError('current working directory is unavailable')
+    writeTerminalError(t('terminal.fileBrowser.error.cwdUnavailable'))
     logFileOpenDebug('abort: cwd unavailable', {
       sourceSessionId,
       sourceInSshShell,
@@ -2833,7 +4180,7 @@ async function openCurrentDirectoryInFileBrowser(): Promise<void> {
 
   workspace.switchSession(sourceSessionId)
   if (!workspace.splitFocusedPane('horizontal', { kind: 'file' })) {
-    writeTerminalError('split limit reached (max 6 panes)')
+    writeTerminalError(t('terminal.layout.error.splitLimitReached', { max: 6 }))
     logFileOpenDebug('abort: splitFocusedPane denied', {
       sourceSessionId,
     })
@@ -2842,7 +4189,7 @@ async function openCurrentDirectoryInFileBrowser(): Promise<void> {
 
   const filePaneSessionId = workspace.activeSessionId.value
   if (!filePaneSessionId) {
-    writeTerminalError('failed to create file browser pane')
+    writeTerminalError(t('terminal.fileBrowser.error.createPaneFailed'))
     logFileOpenDebug('abort: filePaneSessionId unavailable', {
       sourceSessionId,
     })
@@ -2850,7 +4197,7 @@ async function openCurrentDirectoryInFileBrowser(): Promise<void> {
   }
 
   workspace.updateSession(filePaneSessionId, {
-    title: 'File Browser',
+    title: t('terminal.fileBrowser.title'),
     filePanePath: cwd,
     filePaneSourceKind: sourceInSshShell ? 'ssh' : 'local',
     filePaneSourceSessionId: fileBrowserSourceSessionId,
@@ -3025,7 +4372,7 @@ async function splitFocusedPaneAndInheritLocation(direction: 'horizontal' | 'ver
         targetSessionId,
       })
       clearSplitInheritedCwd(targetSessionId)
-      writeTerminalError('split failed to inherit remote server: source server is unavailable')
+      writeTerminalError(t('terminal.split.error.inheritRemoteServerUnavailable'))
       return true
     }
 
@@ -3099,9 +4446,10 @@ function canShowConnectServerSubmenu(): boolean {
   return isLocalSession(sessionId)
 }
 
-function showContextMenu(event: MouseEvent): void {
+function showContextMenu(event: MouseEvent, selectedText?: string): void {
   event.preventDefault()
   clearContextSubmenuHideTimer()
+  contextMenuSelectedText.value = selectedText ?? getCurrentTerminalSelectionText()
   const maxX = Math.max(8, window.innerWidth - CONTEXT_MENU_MAIN_WIDTH - 8)
   const maxY = Math.max(8, window.innerHeight - CONTEXT_MENU_MAIN_HEIGHT - 8)
   const canOpenSubmenuToRight =
@@ -3116,9 +4464,15 @@ function showContextMenu(event: MouseEvent): void {
 }
 
 async function handleContextMenuAction(
-  action: 'copy' | 'paste' | 'clear' | 'open-dir' | 'split-vertical' | 'split-horizontal'
+  action: 'ai-explain' | 'copy' | 'paste' | 'clear' | 'open-dir' | 'split-vertical' | 'split-horizontal'
 ): Promise<void> {
+  const selectedTextForAction = contextMenuSelectedText.value
   hideContextMenu()
+
+  if (action === 'ai-explain') {
+    await explainSelectedTerminalText(selectedTextForAction)
+    return
+  }
 
   if (action === 'copy') {
     await copySelectedText()
@@ -3138,7 +4492,7 @@ async function handleContextMenuAction(
   if (action === 'split-vertical') {
     const splitOk = await splitFocusedPaneAndInheritLocation('vertical')
     if (!splitOk) {
-      writeTerminalError('split limit reached (max 6 panes)')
+      writeTerminalError(t('terminal.layout.error.splitLimitReached', { max: 6 }))
     }
     return
   }
@@ -3146,7 +4500,7 @@ async function handleContextMenuAction(
   if (action === 'split-horizontal') {
     const splitOk = await splitFocusedPaneAndInheritLocation('horizontal')
     if (!splitOk) {
-      writeTerminalError('split limit reached (max 6 panes)')
+      writeTerminalError(t('terminal.layout.error.splitLimitReached', { max: 6 }))
     }
     return
   }
@@ -3189,7 +4543,7 @@ async function preloadContextMenuServers(): Promise<void> {
   try {
     await serverState.ensureLoaded()
   } catch (error) {
-    writeTerminalError(`load servers failed: ${formatError(error)}`)
+    writeTerminalError(t('terminal.server.error.loadServersFailed', { detail: formatError(error) }))
   }
 }
 
@@ -3214,7 +4568,7 @@ async function connectServerToSession(
     if (options?.renameOnFailure) {
       workspace.renameSession(sessionId, options.renameOnFailure)
     }
-    globalMessage.error(formatConnectError(error, '连接服务器失败'), {
+    globalMessage.error(formatConnectError(error, t('terminal.server.error.connectFailed')), {
       replace: true,
     })
     return false
@@ -3230,13 +4584,13 @@ async function handleServerSubmenuAction(
   if (mode === 'new-pane' && serverId === NEW_PANE_LOCALHOST_ITEM_ID) {
     workspace.switchSession(props.sessionId)
     if (!workspace.splitFocusedPane('horizontal')) {
-      writeTerminalError('split limit reached (max 6 panes)')
+      writeTerminalError(t('terminal.layout.error.splitLimitReached', { max: 6 }))
       return
     }
 
     const targetSessionId = workspace.activeSessionId.value
     if (!targetSessionId) {
-      writeTerminalError('failed to create new pane session')
+      writeTerminalError(t('terminal.layout.error.createPaneSessionFailed'))
       return
     }
 
@@ -3249,20 +4603,20 @@ async function handleServerSubmenuAction(
   }
 
   if (typeof serverId !== 'number') {
-    writeTerminalError('invalid server id')
+    writeTerminalError(t('terminal.server.error.invalidServerId'))
     return
   }
 
   const server = serverState.servers.value.find((item) => item.id === serverId)
   if (!server) {
-    writeTerminalError(`server #${serverId} not found`)
+    writeTerminalError(t('terminal.server.error.serverNotFound', { id: serverId }))
     return
   }
 
   if (mode === 'connect-shell') {
     const targetSessionId = props.sessionId.trim()
     if (!targetSessionId || !isLocalSession(targetSessionId)) {
-      writeTerminalError('当前会话不是本地 shell')
+      writeTerminalError(t('terminal.server.error.notLocalShell'))
       logFileOpenDebug('connect-shell abort: target is not local session', {
         targetSessionId,
         mode,
@@ -3281,7 +4635,6 @@ async function handleServerSubmenuAction(
       hostPushed,
       sessionSshHost: workspace.sessions.value.find((item) => item.id === targetSessionId)?.sshHost ?? null,
     })
-    armSshPasswordAutofill(targetSessionId, command, server)
     const written = await writeInputToSession(targetSessionId, `${command}\r`, {
       trackHistory: true,
       reportUnavailable: true,
@@ -3301,7 +4654,7 @@ async function handleServerSubmenuAction(
           sessionSshHost: workspace.sessions.value.find((item) => item.id === targetSessionId)?.sshHost ?? null,
         })
       }
-      writeTerminalError('发送 ssh 命令失败')
+      writeTerminalError(t('terminal.server.error.sendSshCommandFailed'))
       scheduleTerminalFocus(targetSessionId)
       return
     }
@@ -3320,7 +4673,7 @@ async function handleServerSubmenuAction(
       kind: 'local',
     })
     if (!session) {
-      writeTerminalError(`tab limit reached (max ${workspace.maxTabs} tabs)`)
+      writeTerminalError(t('terminal.layout.error.tabLimitReached', { max: workspace.maxTabs }))
       return
     }
 
@@ -3334,13 +4687,13 @@ async function handleServerSubmenuAction(
 
   workspace.switchSession(props.sessionId)
   if (!workspace.splitFocusedPane('horizontal')) {
-    writeTerminalError('split limit reached (max 6 panes)')
+    writeTerminalError(t('terminal.layout.error.splitLimitReached', { max: 6 }))
     return
   }
 
   const targetSessionId = workspace.activeSessionId.value
   if (!targetSessionId) {
-    writeTerminalError('failed to create new pane session')
+    writeTerminalError(t('terminal.layout.error.createPaneSessionFailed'))
     return
   }
 
@@ -3411,7 +4764,7 @@ function reportMissingBridge(): void {
     return
   }
   bridgeMissingReported = true
-  writeTerminalError('window.electronAPI.terminal is unavailable')
+  writeTerminalError(t('terminal.bridge.error.unavailable'))
 }
 
 function isFileDropEvent(event: DragEvent): boolean {
@@ -3571,7 +4924,7 @@ async function writeTempFileFromBlob(
 
     const tempPath = (result as { data?: { path?: unknown } }).data?.path
     if (typeof tempPath !== 'string') {
-      writeTerminalError('temp file write failed: path is unavailable')
+      writeTerminalError(t('terminal.tempFile.error.pathUnavailable'))
       return null
     }
 
@@ -3617,6 +4970,39 @@ async function resolveAbsolutePathsFromFiles(files: readonly FileWithPath[]): Pr
       pathSet.add(normalized)
     }
   }
+  return Array.from(pathSet)
+}
+
+async function resolveImagePathsFromClipboardData(
+  dataTransfer: DataTransfer | null | undefined,
+): Promise<string[]> {
+  if (!dataTransfer?.items?.length) {
+    return []
+  }
+
+  const pathSet = new Set<string>()
+  const timestamp = Date.now()
+  let imageIndex = 0
+  for (const item of Array.from(dataTransfer.items)) {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) {
+      continue
+    }
+
+    const file = item.getAsFile()
+    if (!file) {
+      continue
+    }
+
+    imageIndex += 1
+    const normalized = await writeTempFileFromBlob(file, {
+      fileName: `clipboard-image-${timestamp}-${imageIndex}`,
+      mimeType: item.type || file.type || undefined,
+    })
+    if (normalized) {
+      pathSet.add(normalized)
+    }
+  }
+
   return Array.from(pathSet)
 }
 
@@ -3742,16 +5128,21 @@ function resolveSessionSshHost(sessionId: string): string | null {
   }
 
   const inferredHost = inferSshHostFromTranscript(sessionId)
-  if (!inferredHost) {
+  if (inferredHost) {
+    pushRemoteHost(sessionId, inferredHost)
+    logFileOpenDebug('session sshHost inferred from transcript', {
+      sessionId,
+      inferredHost,
+    })
+    return inferredHost
+  }
+
+  const historyHost = restoreSshHostFromCommandHistory(sessionId)
+  if (!historyHost) {
     return null
   }
 
-  pushRemoteHost(sessionId, inferredHost)
-  logFileOpenDebug('session sshHost inferred from transcript', {
-    sessionId,
-    inferredHost,
-  })
-  return inferredHost
+  return historyHost
 }
 
 function isSessionInSshShell(sessionId: string): boolean {
@@ -3888,7 +5279,9 @@ async function resolveRemoteSftpSessionId(
       sshHost: resolveSessionSshHost(normalizedSessionId),
     })
     if (options.usage === 'file-browser') {
-      writeTerminalError('cannot open remote file browser: remote server is unavailable')
+      writeTerminalError(t('terminal.fileBrowser.error.unsavedSshTarget'))
+    } else {
+      writeTerminalUploadError(t('terminal.upload.error.unsavedSshTarget'))
     }
     return null
   }
@@ -3960,9 +5353,9 @@ async function resolveRemoteSftpSessionId(
     expectedServerHost: server.host,
   })
   if (options.usage === 'file-browser') {
-    writeTerminalError('open file browser failed: SFTP helper connection is not ready')
+    writeTerminalError(t('terminal.fileBrowser.error.sftpHelperNotReady'))
   } else {
-    writeTerminalUploadError('upload failed: SFTP helper connection is not ready')
+    writeTerminalUploadError(t('terminal.upload.error.sftpHelperNotReady'))
   }
   return null
 }
@@ -4183,7 +5576,6 @@ async function maybeAutoRunSshConnectCommand(sessionId: string, source: string):
 
   clearAutoSshPromptSettleTimer(sessionId)
   sshAutoConnectCommandIssuedBySession.add(sessionId)
-  armSshPasswordAutofill(sessionId, command)
 
   let written = false
   try {
@@ -4408,12 +5800,96 @@ function joinRemoteFilePath(cwd: string, fileName: string): string {
 interface UploadTarget {
   localPath: string
   fileName: string
+  displayName: string
   remotePath: string
 }
 
 function getSftpApi(): SshSftpApi | null {
   const api = (window as unknown as { electronAPI?: { ssh?: { sftp?: SshSftpApi } } }).electronAPI
   return api?.ssh?.sftp ?? null
+}
+
+function getLocalFileApi(): LocalFileApi | null {
+  const target = window as Window & {
+    electronAPI?: Partial<ElectronApi>
+    __electronAPIBridge?: Partial<ElectronApi>
+  }
+
+  const primary = target.electronAPI?.localFile as Partial<LocalFileApi> | undefined
+  const fallback = target.__electronAPIBridge?.localFile as Partial<LocalFileApi> | undefined
+  const list = primary?.list ?? fallback?.list
+  if (typeof list !== 'function') {
+    return null
+  }
+
+  const resolved = (primary ?? fallback) as LocalFileApi
+  return resolved
+}
+
+function joinRelativeUploadPath(base: string, next: string): string {
+  const normalizedBase = base.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
+  const normalizedNext = next.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
+  if (!normalizedBase) {
+    return normalizedNext
+  }
+  if (!normalizedNext) {
+    return normalizedBase
+  }
+  return `${normalizedBase}/${normalizedNext}`
+}
+
+async function listLocalDirectoryEntries(absolutePath: string): Promise<LocalFileListData['entries'] | null> {
+  const localFileApi = getLocalFileApi()
+  if (!localFileApi?.list) {
+    return null
+  }
+
+  try {
+    const result = await localFileApi.list({ path: absolutePath })
+    if (!result.ok) {
+      return null
+    }
+
+    return result.data.entries
+  } catch {
+    return null
+  }
+}
+
+async function collectDirectoryUploadTargets(
+  directoryPath: string,
+  relativePrefix: string,
+  cwd: string,
+  targets: UploadTarget[],
+): Promise<void> {
+  const entries = await listLocalDirectoryEntries(directoryPath)
+  if (!entries?.length) {
+    return
+  }
+
+  for (const entry of entries) {
+    const entryName = entry.name.trim()
+    if (!entryName) {
+      continue
+    }
+
+    const entryRelativePath = joinRelativeUploadPath(relativePrefix, entryName)
+    if (entry.type === 'directory') {
+      await collectDirectoryUploadTargets(entry.path, entryRelativePath, cwd, targets)
+      continue
+    }
+
+    if (entry.type !== 'file' && entry.type !== 'link' && entry.type !== 'unknown') {
+      continue
+    }
+
+    targets.push({
+      localPath: entry.path,
+      fileName: toPathBasename(entry.path) || entryName,
+      displayName: entryRelativePath,
+      remotePath: joinRemoteFilePath(cwd, entryRelativePath),
+    })
+  }
 }
 
 async function insertDroppedPaths(paths: string[]): Promise<void> {
@@ -4430,24 +5906,31 @@ async function insertDroppedPaths(paths: string[]): Promise<void> {
   await sendInputToBridge(insertion)
 }
 
-async function resolveUploadTargets(
-  _sftp: SshSftpApi,
-  _sessionId: string,
-  cwd: string,
-  paths: string[]
-): Promise<UploadTarget[] | null> {
+async function resolveUploadTargets(cwd: string, paths: string[]): Promise<UploadTarget[] | null> {
   const allTargets: UploadTarget[] = []
+
   for (const localPath of paths) {
-    const fileName = toPathBasename(localPath)
-    if (!fileName) {
+    const rootName = toPathBasename(localPath)
+    if (!rootName) {
       writeTerminalUploadError(`upload failed: invalid local path "${localPath}"`)
       return null
     }
 
+    const beforeCount = allTargets.length
+    const directoryEntries = await listLocalDirectoryEntries(localPath)
+    if (directoryEntries !== null) {
+      await collectDirectoryUploadTargets(localPath, rootName, cwd, allTargets)
+      if (allTargets.length === beforeCount) {
+        writeTerminalInfo(`skip empty directory: ${rootName}`)
+      }
+      continue
+    }
+
     allTargets.push({
       localPath,
-      fileName,
-      remotePath: joinRemoteFilePath(cwd, fileName),
+      fileName: rootName,
+      displayName: rootName,
+      remotePath: joinRemoteFilePath(cwd, rootName),
     })
   }
   return allTargets
@@ -4472,9 +5955,7 @@ async function tryUploadFile(sftp: SshSftpApi, sessionId: string, target: Upload
 }
 
 function confirmRetryUpload(fileName: string, reason: string): boolean {
-  return window.confirm(
-    `文件上传失败：${fileName}\n原因：${reason}\n确定：重试一次\n取消：跳过该文件并继续`
-  )
+  return window.confirm(t('terminal.upload.confirm.retryFailedFile', { fileName, reason }))
 }
 
 async function uploadDroppedPathsToRemote(
@@ -4484,7 +5965,7 @@ async function uploadDroppedPathsToRemote(
 ): Promise<boolean> {
   const activeTerminalSessionId = resolveActiveSessionId()
   if (!activeTerminalSessionId) {
-    writeTerminalUploadError('upload failed: active terminal session is unavailable')
+    writeTerminalUploadError(t('terminal.upload.error.activeSessionUnavailable'))
     return false
   }
 
@@ -4492,7 +5973,7 @@ async function uploadDroppedPathsToRemote(
 
   const sftp = getSftpApi()
   if (!sftp?.put || !sftp?.list) {
-    writeTerminalUploadError('upload failed: window.electronAPI.ssh.sftp.list/put is unavailable')
+    writeTerminalUploadError(t('terminal.upload.error.sftpApiUnavailable'))
     return false
   }
 
@@ -4503,11 +5984,11 @@ async function uploadDroppedPathsToRemote(
       preferRemote: sftpSessionId !== activeTerminalSessionId || isRemoteManagedSession(activeTerminalSessionId),
     }))
   if (!cwd || !cwd.trim()) {
-    writeTerminalUploadError('upload failed: current working directory is unavailable')
+    writeTerminalUploadError(t('terminal.upload.error.cwdUnavailable'))
     return false
   }
 
-  const uploadTargets = await resolveUploadTargets(sftp, sftpSessionId, cwd, paths)
+  const uploadTargets = await resolveUploadTargets(cwd, paths)
   if (!uploadTargets) {
     return false
   }
@@ -4527,34 +6008,34 @@ async function uploadDroppedPathsToRemote(
       succeeded += 1
       processed += 1
       const percent = toUploadPercent(processed, uploadTargets.length)
-      writeTerminalInfo(`${processed}/${uploadTargets.length} (${percent}%) ${target.fileName}`)
+      writeTerminalInfo(`${processed}/${uploadTargets.length} (${percent}%) ${target.displayName}`)
       continue
     }
 
-    writeTerminalUploadError(`upload failed: ${target.fileName}: ${firstAttemptError}`)
-    const shouldRetry = confirmRetryUpload(target.fileName, firstAttemptError)
+    writeTerminalUploadError(`upload failed: ${target.displayName}: ${firstAttemptError}`)
+    const shouldRetry = confirmRetryUpload(target.displayName, firstAttemptError)
     if (shouldRetry) {
-      writeTerminalInfo(`retry 1/1 (${processingIndex}/${uploadTargets.length}) ${target.fileName}`)
+      writeTerminalInfo(`retry 1/1 (${processingIndex}/${uploadTargets.length}) ${target.displayName}`)
       const retryError = await tryUploadFile(sftp, sftpSessionId, target)
       if (!retryError) {
         succeeded += 1
         processed += 1
         const percent = toUploadPercent(processed, uploadTargets.length)
-        writeTerminalInfo(`${processed}/${uploadTargets.length} (${percent}%) ${target.fileName} (retried)`)
+        writeTerminalInfo(`${processed}/${uploadTargets.length} (${percent}%) ${target.displayName} (retried)`)
         continue
       }
 
-      writeTerminalUploadError(`retry failed: ${target.fileName}: ${retryError}`)
-      failedFiles.push(target.fileName)
+      writeTerminalUploadError(`retry failed: ${target.displayName}: ${retryError}`)
+      failedFiles.push(target.displayName)
       processed += 1
       const percent = toUploadPercent(processed, uploadTargets.length)
-      writeTerminalInfo(`${processed}/${uploadTargets.length} (${percent}%) ${target.fileName} (failed)`)
+      writeTerminalInfo(`${processed}/${uploadTargets.length} (${percent}%) ${target.displayName} (failed)`)
     } else {
-      writeTerminalInfo(`retry skipped: ${target.fileName}`)
-      failedFiles.push(target.fileName)
+      writeTerminalInfo(`retry skipped: ${target.displayName}`)
+      failedFiles.push(target.displayName)
       processed += 1
       const percent = toUploadPercent(processed, uploadTargets.length)
-      writeTerminalInfo(`${processed}/${uploadTargets.length} (${percent}%) ${target.fileName} (skipped)`)
+      writeTerminalInfo(`${processed}/${uploadTargets.length} (${percent}%) ${target.displayName} (skipped)`)
     }
   }
 
@@ -4578,43 +6059,23 @@ function isRemoteConnectedSession(sessionId: string): boolean {
   return snapshot.state === 'connected' || snapshot.state === 'reconnecting'
 }
 
-async function handleResolvedLocalPaths(paths: string[], emptyMessage: string): Promise<void> {
+async function handleResolvedLocalPaths(
+  paths: string[],
+  emptyMessage: string,
+  options: { asImagePaste?: boolean } = {},
+): Promise<void> {
   if (!paths.length) {
     writeTerminalError(emptyMessage)
     return
   }
 
-  const sessionId = resolveActiveSessionId()
-  if (!sessionId) {
-    writeTerminalError('operation ignored: active terminal session is unavailable')
+  if (options.asImagePaste) {
+    await pasteImagePathsForCli(paths)
     return
   }
 
-  const remoteUploadSftpSessionId = await resolveRemoteSftpSessionId(sessionId, {
-    usage: 'upload',
-  })
-  if (!remoteUploadSftpSessionId) {
-    await insertDroppedPaths(paths)
-    return
-  }
-
-  const remoteCwd = await resolveRemoteUploadTargetCwd(sessionId)
-  if (!remoteCwd || !remoteCwd.trim()) {
-    writeTerminalUploadError('upload failed: unable to resolve current remote directory')
-    return
-  }
-
-  const shouldUpload = window.confirm(
-    `检测到 ${paths.length} 个本地文件。\n确定：上传到 ${remoteCwd}\n取消：不执行任何操作`
-  )
-
-  if (shouldUpload) {
-    await uploadDroppedPathsToRemote(paths, remoteCwd, {
-      sftpSessionId: remoteUploadSftpSessionId,
-    })
-    return
-  }
-  writeTerminalInfo('upload canceled by user')
+  // Shell drag/drop always inserts paths. Remote upload is only available in file pane.
+  await insertDroppedPaths(paths)
 }
 
 async function handleFileDrop(event: DragEvent): Promise<void> {
@@ -4727,7 +6188,7 @@ function attachBridgeListeners(): void {
   }
 
   if (!bridge.onData) {
-    writeTerminalError('window.electronAPI.terminal.onData is unavailable')
+    writeTerminalError(t('terminal.bridge.error.onDataUnavailable'))
     return
   }
 
@@ -4815,6 +6276,7 @@ function attachBridgeListeners(): void {
         }
 
         sessionCache.appendTranscript(sessionId, chunk)
+        maybeShowTerminalDebugHint(sessionId, chunk)
         schedulePersistLocalSessionSnapshot(sessionId)
         if (isLocalSession(sessionId)) {
           const disconnectHost = detectSshDisconnectHostFromOutput(chunk)
@@ -4905,7 +6367,6 @@ function attachBridgeListeners(): void {
         firstPromptLoggedBySession.delete(payloadSessionId)
         localPromptReadyBySession.delete(payloadSessionId)
         sessionPromptBuffer.delete(payloadSessionId)
-        clearSshPasswordAutofillState(payloadSessionId)
         clearRemoteHostState(payloadSessionId)
         clearAutoSshRuntimeState(payloadSessionId, 'bridge-exit')
         clearSplitInheritedCwd(payloadSessionId)
@@ -4914,6 +6375,12 @@ function attachBridgeListeners(): void {
         sessionCache.clearOpenedSession(payloadSessionId)
         clearSnapshotPersistTimer(payloadSessionId)
         clearHistoryPersistTimer(payloadSessionId)
+        lastTerminalDebugHintAtBySession.delete(payloadSessionId)
+        if (terminalDebugHintSessionId.value === payloadSessionId) {
+          dismissTerminalDebugHint()
+          terminalDebugHintSessionId.value = ''
+          terminalDebugHintContext.value = ''
+        }
         void persistLocalSessionSnapshotNow(payloadSessionId)
         void persistLocalSessionHistoryNow(payloadSessionId)
         if (activeBridgeSessionId === payloadSessionId) {
@@ -4974,53 +6441,11 @@ async function writeInputToSession(
   return writeOk
 }
 
-async function maybeAutoFillSshPasswordPrompt(sessionId: string, chunk: string): Promise<boolean> {
-  const armedUntil = sshPasswordAutofillArmedUntilBySession.get(sessionId) ?? 0
-  if (armedUntil <= Date.now()) {
-    if (armedUntil > 0) {
-      clearSshPasswordAutofillState(sessionId)
-    }
-    return false
-  }
-
-  if (sshPasswordAutofillConsumedBySession.has(sessionId)) {
-    return false
-  }
-
-  const promptIdentity = matchSshPasswordPromptLine(sessionId, chunk)
-  if (!promptIdentity) {
-    return false
-  }
-
-  const target = resolveSshPasswordAutofillTarget(sessionId)
-  if (!target) {
-    clearSshPasswordAutofillState(sessionId)
-    return false
-  }
-
-  const payload = resolveTriggerSendPayload(promptIdentity, `${target.secret}\n`)
-  if (!payload) {
-    return false
-  }
-
-  const written = await sendAutomatedInput(sessionId, payload, {
-    source: 'system-ssh-password',
-    label: promptIdentity,
-    pattern: promptIdentity,
-  })
-  if (!written) {
-    return false
-  }
-
-  sshPasswordAutofillConsumedBySession.add(sessionId)
-  return true
-}
-
 async function sendInputToBridge(data: string): Promise<void> {
   const sessionId = activeBridgeSessionId
   if (!sessionId || !data) {
     if (data && !sessionId) {
-      writeTerminalError('active terminal session is unavailable')
+      writeTerminalError(t('terminal.session.error.activeUnavailable'))
     }
     return
   }
@@ -5309,17 +6734,25 @@ async function bootTerminal(): Promise<void> {
 
     terminal.open(mountEl.value)
     terminal.attachCustomKeyEventHandler?.((event) => {
+      if (event.type === 'keydown' && event.key === 'k' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault()
+        event.stopPropagation()
+        if (aiCommandBarVisible.value) {
+          closeAICommandBar()
+        } else {
+          dismissTerminalDebugHint()
+          void ensureAICommandBarReady()
+        }
+        return false
+      }
+      // 命令栏打开时，只有焦点在命令栏内才拦截按键；点击 shell 后焦点在终端，应允许输入
+      if (aiCommandBarVisible.value && aiCommandBarEl.value?.contains(document.activeElement)) {
+        return false
+      }
       if (event.type !== 'keydown') {
         return true
       }
-      if (!isHistorySearchShortcut(event)) {
-        return true
-      }
-
-      event.preventDefault()
-      event.stopPropagation()
-      void promptCommandHistorySearch()
-      return false
+      return true
     })
 
     try {
@@ -5334,7 +6767,7 @@ async function bootTerminal(): Promise<void> {
     }
 
     try {
-      const webLinksModule = await import('xterm-addon-web-links')
+      const webLinksModule = await import('@xterm/addon-web-links')
       const WebLinksAddonCtor = (webLinksModule as { WebLinksAddon?: new (handler?: (event: MouseEvent, uri: string) => void) => { dispose?: () => void } }).WebLinksAddon
       if (WebLinksAddonCtor) {
         const shellApi = (window as Window & { electronAPI?: { shell?: { openExternal: (url: string) => Promise<unknown> } }; __electronAPIBridge?: { shell?: { openExternal: (url: string) => Promise<unknown> } } }).electronAPI?.shell ?? (window as Window & { __electronAPIBridge?: { shell?: { openExternal: (url: string) => Promise<unknown> } } }).__electronAPIBridge?.shell
@@ -5375,8 +6808,9 @@ async function bootTerminal(): Promise<void> {
       hideContextMenu()
     }
     const contextMenuHandler = (event: MouseEvent) => {
+      const selectedText = getCurrentTerminalSelectionText()
       terminal?.focus?.()
-      showContextMenu(event)
+      showContextMenu(event, selectedText)
     }
     const dragenterHandler = (event: DragEvent) => {
       if (!isFileDropEvent(event)) {
@@ -5406,7 +6840,31 @@ async function bootTerminal(): Promise<void> {
       void handleFileDrop(event)
     }
     const pasteHandler = (event: ClipboardEvent) => {
+      const clipboardData = event.clipboardData
+      const hasImageItems = Array.from(clipboardData?.items ?? []).some(
+        (item) => item.kind === 'file' && item.type.startsWith('image/'),
+      )
       const clipboardFiles = extractClipboardFiles(event.clipboardData)
+      if (hasImageItems) {
+        event.preventDefault()
+        hideContextMenu()
+        void (async () => {
+          const imagePaths = await resolveImagePathsFromClipboardData(clipboardData)
+          if (imagePaths.length) {
+            await handleResolvedLocalPaths(imagePaths, 'paste ignored: no absolute file paths found', {
+              asImagePaste: true,
+            })
+            return
+          }
+
+          const paths = await resolveAbsolutePathsFromFiles(clipboardFiles)
+          await handleResolvedLocalPaths(paths, 'paste ignored: no absolute file paths found', {
+            asImagePaste: true,
+          })
+        })()
+        return
+      }
+
       if (clipboardFiles.length) {
         event.preventDefault()
         hideContextMenu()
@@ -5419,6 +6877,11 @@ async function bootTerminal(): Promise<void> {
 
       const text = event.clipboardData?.getData('text')
       if (typeof text !== 'string' || text.length === 0) {
+        // Some clipboard sources do not expose image blobs on event.clipboardData.
+        // Reuse the async clipboard path to support image paste in shell (e.g. Codex CLI input).
+        event.preventDefault()
+        hideContextMenu()
+        void pasteFromClipboard()
         return
       }
 
@@ -5470,7 +6933,7 @@ async function bootTerminal(): Promise<void> {
     mountEl.value.addEventListener('dragenter', dragenterHandler)
     mountEl.value.addEventListener('dragover', dragoverHandler)
     mountEl.value.addEventListener('drop', dropHandler)
-    mountEl.value.addEventListener('paste', pasteHandler)
+    mountEl.value.addEventListener('paste', pasteHandler, true)
     mountEl.value.addEventListener('pointerenter', pointerEnterHandler)
     mountEl.value.addEventListener('pointerleave', pointerLeaveHandler)
     mountEl.value.addEventListener('wheel', wheelHandler, { passive: false, capture: true })
@@ -5481,7 +6944,7 @@ async function bootTerminal(): Promise<void> {
       mountEl.value?.removeEventListener('dragenter', dragenterHandler)
       mountEl.value?.removeEventListener('dragover', dragoverHandler)
       mountEl.value?.removeEventListener('drop', dropHandler)
-      mountEl.value?.removeEventListener('paste', pasteHandler)
+      mountEl.value?.removeEventListener('paste', pasteHandler, true)
       mountEl.value?.removeEventListener('pointerenter', pointerEnterHandler)
       mountEl.value?.removeEventListener('pointerleave', pointerLeaveHandler)
       mountEl.value?.removeEventListener('wheel', wheelHandler, true)
@@ -5595,6 +7058,7 @@ function disposeTerminal(): void {
   removeWindowBlurListener = null
   zoomModifierPressed = false
   pointerInsideTerminalHost = false
+  aiCommandBarVisible.value = false
   resizeObserver?.disconnect()
   resizeObserver = null
   fitAddon = null
@@ -5622,7 +7086,6 @@ watch(
       firstPromptLoggedBySession.delete(openedSessionId)
       localPromptReadyBySession.delete(openedSessionId)
       sessionPromptBuffer.delete(openedSessionId)
-      clearSshPasswordAutofillState(openedSessionId)
       clearRemoteHostState(openedSessionId)
       void disposeRemoteUploadHelperSessions(openedSessionId)
       clearAutoSshRuntimeState(openedSessionId, 'session-removed-watch')
@@ -5634,6 +7097,12 @@ watch(
       clearHistoryPersistTimer(openedSessionId)
       sessionCommandHistory.delete(openedSessionId)
       sessionPendingInput.delete(openedSessionId)
+      lastTerminalDebugHintAtBySession.delete(openedSessionId)
+      if (terminalDebugHintSessionId.value === openedSessionId) {
+        dismissTerminalDebugHint()
+        terminalDebugHintSessionId.value = ''
+        terminalDebugHintContext.value = ''
+      }
       resetLocalEchoLine(openedSessionId)
       sessionCache.clearTranscript(openedSessionId)
       sessionCache.clearSshCommandHint(openedSessionId)
@@ -5660,6 +7129,11 @@ watch(
       return
     }
 
+    if (terminalDebugHintSessionId.value && terminalDebugHintSessionId.value !== sessionId) {
+      dismissTerminalDebugHint()
+      terminalDebugHintSessionId.value = ''
+      terminalDebugHintContext.value = ''
+    }
     activeBridgeSessionId = null
     renderSessionTranscript(sessionId)
     scheduleBackgroundBind(sessionId, 'session-changed')
@@ -5711,7 +7185,7 @@ watch(
 watch(
   () =>
     triggerState.rules.value
-      .map((rule) => `${rule.id}|${rule.enabled ? '1' : '0'}|${rule.pattern}|${rule.sendText}`)
+      .map((rule) => `${rule.id}|${rule.enabled ? '1' : '0'}|${rule.autoSend ? '1' : '0'}|${rule.pattern}|${rule.sendText}`)
       .join('\u001f'),
   () => {
     clearTerminalTriggerRuntimeState()
@@ -5733,6 +7207,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   lifecycleDisposed = true
   sessionBindingVersion += 1
+  aiCommandBarResizeCleanup?.()
+  aiCommandBarResizeCleanup = null
   clearContextSubmenuHideTimer()
   for (const openedSessionId of Array.from(openedBridgeSessionIds)) {
     void persistLocalSessionStateNow(openedSessionId)
@@ -5750,7 +7226,6 @@ onBeforeUnmount(() => {
     firstPromptLoggedBySession.delete(openedSessionId)
     localPromptReadyBySession.delete(openedSessionId)
     sessionOpenedWithLocalFallback.delete(openedSessionId)
-    clearSshPasswordAutofillState(openedSessionId)
     if (!hasSessionInWorkspace(openedSessionId)) {
       clearRemoteHostState(openedSessionId)
     }
@@ -5764,6 +7239,12 @@ onBeforeUnmount(() => {
     clearHistoryPersistTimer(openedSessionId)
     sessionCommandHistory.delete(openedSessionId)
     sessionPendingInput.delete(openedSessionId)
+    lastTerminalDebugHintAtBySession.delete(openedSessionId)
+    if (terminalDebugHintSessionId.value === openedSessionId) {
+      dismissTerminalDebugHint()
+      terminalDebugHintSessionId.value = ''
+      terminalDebugHintContext.value = ''
+    }
     resetLocalEchoLine(openedSessionId)
   }
   openedBridgeSessionIds.clear()
@@ -5773,9 +7254,25 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="xterm-shell">
+  <section ref="xtermShellEl" class="xterm-shell">
     <div ref="mountEl" class="xterm-host" />
     <div v-if="fontZoomHint" class="font-zoom-hint">{{ fontZoomHint }}</div>
+    <div v-if="terminalDebugHintVisible" class="terminal-debug-hint">
+      <span class="terminal-debug-hint__text">{{ t('terminal.debugHint.detected') }}</span>
+      <div class="terminal-debug-hint__actions">
+        <button type="button" class="terminal-debug-hint__action" @click="void onDebugWithNovar()">
+          {{ t('terminal.debugHint.action') }}
+        </button>
+        <button
+          type="button"
+          class="terminal-debug-hint__dismiss"
+          :aria-label="t('terminal.debugHint.dismissAria')"
+          @click="dismissTerminalDebugHint"
+        >
+          ×
+        </button>
+      </div>
+    </div>
     <div
       v-if="contextMenuState.visible"
       ref="contextMenuEl"
@@ -5783,6 +7280,14 @@ onBeforeUnmount(() => {
       :style="{ left: `${contextMenuState.x}px`, top: `${contextMenuState.y}px` }"
       role="menu"
     >
+      <button
+        v-if="contextMenuSelectedText.trim()"
+        type="button"
+        role="menuitem"
+        @click="void handleContextMenuAction('ai-explain')"
+      >
+        {{ t('terminal.menu.aiExplain') }}
+      </button>
       <button type="button" role="menuitem" @click="void handleContextMenuAction('copy')">
         {{ t('terminal.menu.copy') }}
       </button>
@@ -5906,6 +7411,115 @@ onBeforeUnmount(() => {
       <p>{{ fallbackReason }}</p>
       <p>Terminal UI stays responsive; check renderer/main logs for details.</p>
     </div>
+    <div
+      v-if="aiCommandBarVisible"
+      ref="aiCommandBarEl"
+      class="ai-command-bar"
+      :style="aiCommandBarHeightStyle"
+      @keydown="onAICommandBarKeydown"
+    >
+      <div
+        class="ai-command-bar__resize-handle"
+        :title="t('terminal.aiBar.resizeHandleTitle')"
+        @mousedown.prevent.stop="startAICommandBarResize($event)"
+      />
+      <div class="ai-command-bar__header">
+        <div class="ai-command-bar__header-left">
+          <span class="ai-command-bar__title">{{ t('terminal.aiBar.title') }}</span>
+          <select
+            v-model="aiSelectedModelTargetId"
+            class="ai-command-bar__model-select"
+            :aria-label="t('terminal.aiBar.modelSelectAria')"
+            :disabled="aiCommandBarLoading"
+            @change="void onAIModelTargetChange()"
+          >
+            <option v-for="target in aiModelTargets" :key="target.id" :value="target.id">
+              {{ target.label }}
+            </option>
+          </select>
+          <span
+            v-if="SHOW_AI_RESPONSE_LANGUAGE_DEBUG"
+            class="ai-command-bar__lang-debug"
+          >
+            Lang: {{ aiResponseLanguage }}
+          </span>
+        </div>
+        <button
+          type="button"
+          class="ai-command-bar__close"
+          :aria-label="t('terminal.aiBar.closeAria')"
+          @click="closeAICommandBar"
+        >
+          ×
+        </button>
+      </div>
+      <div ref="aiCommandBarContentEl" class="ai-command-bar__content">
+        <div class="ai-command-bar__messages">
+          <template v-for="(msg, i) in aiCommandBarMessages" :key="i">
+            <div :class="['ai-command-bar__msg', `ai-command-bar__msg--${msg.role}`]">
+              <div v-if="msg.role === 'user' && msg.displayCard" class="ai-command-bar__msg-content">
+                <div class="ai-command-bar__user-card">
+                  <p class="ai-command-bar__user-card-title">{{ msg.displayCard.title }}</p>
+                  <div
+                    v-for="(section, sectionIndex) in msg.displayCard.sections"
+                    :key="`user-card-section-${i}-${sectionIndex}`"
+                    class="ai-command-bar__user-card-section"
+                  >
+                    <span class="ai-command-bar__user-card-label">{{ section.label }}</span>
+                    <pre class="ai-command-bar__user-card-value">{{ section.value }}</pre>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="ai-command-bar__msg-content">{{ msg.content }}</div>
+              <div
+                v-if="msg.role === 'assistant' && msg.isCommand && msg.commandText"
+                class="ai-command-bar__cmd-actions"
+              >
+                <button type="button" class="ai-command-bar__cmd-btn" @click="void onAICmdRun(msg.commandText!)">
+                  {{ t('terminal.aiBar.action.run') }}
+                </button>
+                <button type="button" class="ai-command-bar__cmd-btn" @click="void onAICmdInsert(msg.commandText!)">
+                  {{ t('terminal.aiBar.action.insert') }}
+                </button>
+                <button type="button" class="ai-command-bar__cmd-btn" @click="onAICmdExpand(msg.commandText!)">
+                  {{ t('terminal.aiBar.action.expand') }}
+                </button>
+              </div>
+            </div>
+          </template>
+          <div
+            v-if="aiCommandBarLoading || aiCommandBarStreamingReply"
+            class="ai-command-bar__msg ai-command-bar__msg--assistant"
+          >
+            <div class="ai-command-bar__msg-content">
+              <span v-if="aiCommandBarLoading && !aiCommandBarStreamingReply" class="ai-command-bar__loading">{{ t('terminal.aiBar.loading') }}</span>
+              <span v-else class="ai-command-bar__response-text">{{ aiCommandBarStreamingReply }}</span>
+            </div>
+            <div
+              v-if="!aiCommandBarLoading && aiCommandBarLastErrorCode === 'quota_exceeded'"
+              class="ai-command-bar__quota-hint"
+            >
+              <span class="ai-command-bar__quota-hint-text">{{ t('terminal.aiBar.error.quotaExceededActionHint') }}</span>
+              <button type="button" class="ai-command-bar__quota-hint-btn" @click="openAIModelSettings">
+                {{ t('terminal.aiBar.error.addModelNow') }}
+              </button>
+            </div>
+          </div>
+          <p v-if="aiCommandBarMessages.length === 0 && !aiCommandBarLoading && !aiCommandBarStreamingReply" class="ai-command-bar__placeholder">—</p>
+        </div>
+      </div>
+      <div class="ai-command-bar__input-row">
+        <textarea
+          ref="aiCommandBarInputEl"
+          v-model="aiCommandBarInput"
+          class="ai-command-bar__input"
+          :placeholder="t('terminal.aiBar.inputPlaceholder')"
+          rows="2"
+          @keydown.enter.exact="onAICommandBarEnter"
+          @keydown.escape.prevent.stop="closeAICommandBar"
+        />
+      </div>
+    </div>
   </section>
 </template>
 
@@ -5982,6 +7596,68 @@ onBeforeUnmount(() => {
     'Courier New', monospace;
 }
 
+.terminal-debug-hint {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  z-index: 2895;
+  max-width: min(70%, 720px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(251, 146, 60, 0.45);
+  background: rgba(67, 20, 7, 0.92);
+  color: #ffedd5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.terminal-debug-hint__text {
+  font-size: 12px;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.terminal-debug-hint__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.terminal-debug-hint__action {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(253, 186, 116, 0.55);
+  border-radius: 6px;
+  background: rgba(251, 146, 60, 0.2);
+  color: #ffedd5;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.terminal-debug-hint__action:hover {
+  background: rgba(251, 146, 60, 0.3);
+}
+
+.terminal-debug-hint__dismiss {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #fdba74;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.terminal-debug-hint__dismiss:hover {
+  background: rgba(253, 186, 116, 0.16);
+  color: #ffedd5;
+}
+
 .xterm-fallback {
   position: absolute;
   inset: 12px;
@@ -6000,6 +7676,286 @@ onBeforeUnmount(() => {
 
 .xterm-fallback p {
   margin: 0;
+}
+
+.ai-command-bar {
+  position: relative;
+  flex: 0 0 50%;
+  min-height: 100px;
+  max-height: 50%;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid #334155;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.ai-command-bar__resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  z-index: 2;
+  cursor: ns-resize;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 0.15s;
+}
+
+.ai-command-bar__resize-handle:hover {
+  background: rgba(148, 163, 184, 0.3);
+}
+
+.ai-command-bar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-top: 4px;
+}
+
+.ai-command-bar__header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ai-command-bar__title {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.02em;
+}
+
+.ai-command-bar__model-select {
+  height: 26px;
+  max-width: 300px;
+  min-width: 180px;
+  padding: 0 8px;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  background: rgba(30, 41, 59, 0.85);
+  color: #e2e8f0;
+  font-size: 12px;
+  outline: none;
+}
+
+.ai-command-bar__model-select:disabled {
+  opacity: 0.65;
+}
+
+.ai-command-bar__lang-debug {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.75);
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ai-command-bar__close {
+  padding: 2px 6px;
+  font-size: 18px;
+  line-height: 1;
+  color: #94a3b8;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.ai-command-bar__close:hover {
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ai-command-bar__content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.ai-command-bar__messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.ai-command-bar__msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-command-bar__msg-content {
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
+  color: #e2e8f0;
+}
+
+.ai-command-bar__msg--user .ai-command-bar__msg-content {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.18);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+}
+
+.ai-command-bar__user-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-command-bar__user-card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #dbeafe;
+}
+
+.ai-command-bar__user-card-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-command-bar__user-card-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #bfdbfe;
+}
+
+.ai-command-bar__user-card-value {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #eff6ff;
+  font-family: inherit;
+}
+
+.ai-command-bar__cmd-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.ai-command-bar__cmd-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #94a3b8;
+  background: rgba(51, 65, 85, 0.6);
+  border: 1px solid #475569;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.ai-command-bar__cmd-btn:hover {
+  color: #e2e8f0;
+  background: rgba(71, 85, 105, 0.7);
+  border-color: #64748b;
+}
+
+.ai-command-bar__input-row {
+  flex-shrink: 0;
+}
+
+.ai-command-bar__input {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #e2e8f0;
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid #334155;
+  border-radius: 6px;
+  resize: none;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.ai-command-bar__input::placeholder {
+  color: #64748b;
+}
+
+.ai-command-bar__input:focus {
+  outline: none;
+  border-color: #475569;
+}
+
+.ai-command-bar__response-text {
+  display: block;
+}
+
+.ai-command-bar__loading {
+  color: #94a3b8;
+}
+
+.ai-command-bar__quota-hint {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-command-bar__quota-hint-text {
+  font-size: 12px;
+  color: #cbd5e1;
+}
+
+.ai-command-bar__quota-hint-btn {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid #3b82f6;
+  border-radius: 6px;
+  background: rgba(37, 99, 235, 0.2);
+  color: #dbeafe;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-command-bar__quota-hint-btn:hover {
+  background: rgba(37, 99, 235, 0.32);
+  border-color: #60a5fa;
+}
+
+.ai-command-bar__placeholder {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.ai-command-bar__hint {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #64748b;
 }
 
 .terminal-context-menu {

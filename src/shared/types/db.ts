@@ -41,7 +41,6 @@ export interface Server {
   privateKeyPath: string | null;
   passphrase: string | null;
   defaultDirectory: string | null;
-  isFavorite: boolean;
   lastConnectedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -58,7 +57,6 @@ export interface CreateServerInput {
   privateKeyPath?: string | null;
   passphrase?: string | null;
   defaultDirectory?: string | null;
-  isFavorite?: boolean;
   lastConnectedAt?: string | null;
 }
 
@@ -73,7 +71,6 @@ export interface UpdateServerInput {
   privateKeyPath?: string | null;
   passphrase?: string | null;
   defaultDirectory?: string | null;
-  isFavorite?: boolean;
   lastConnectedAt?: string | null;
 }
 

@@ -35,7 +35,6 @@ function createServerService(): ServerService {
         privateKeyPath: input.privateKeyPath ?? null,
         passphrase: input.passphrase ?? null,
         defaultDirectory: input.defaultDirectory ?? null,
-        isFavorite: input.isFavorite ?? false,
         lastConnectedAt: input.lastConnectedAt ?? null,
         createdAt: '',
         updatedAt: '',

@@ -8,8 +8,19 @@ import { useTerminalTriggers } from '../../composables/useTerminalTriggers'
 import type { CreateServerInput, ServerRecord } from '../../types/server'
 import AppDialog from '../common/AppDialog.vue'
 
-type SettingsTab = 'general' | 'servers' | 'triggers'
+type SettingsTab = 'general' | 'servers' | 'triggers' | 'ai'
 type ServerEditorMode = 'create' | 'edit' | null
+
+const AI_PLATFORMS_KEY = 'ai.platforms'
+const AI_RESPONSE_LANGUAGE_KEY = 'ai.commandBar.responseLanguage'
+
+interface AIPlatformRecord {
+  id: number
+  platformName: string
+  apiUrl: string
+  apiKey: string
+  model: string
+}
 
 const props = defineProps<{
   open: boolean
@@ -50,6 +61,19 @@ const serverForm = reactive({
   password: '',
 })
 
+const aiPlatforms = ref<AIPlatformRecord[]>([])
+type PlatformEditorMode = 'create' | 'edit' | null
+const platformEditorMode = ref<PlatformEditorMode>(null)
+const editingPlatformId = ref<number | null>(null)
+const platformForm = reactive({
+  platformName: '',
+  apiUrl: '',
+  apiKey: '',
+  model: '',
+})
+const platformSubmitting = ref(false)
+const platformError = ref<string | null>(null)
+
 const serversSorted = computed(() => {
   return [...serverState.servers.value].sort((left, right) => {
     const byName = left.name.localeCompare(right.name)
@@ -63,6 +87,12 @@ const serversSorted = computed(() => {
     return left.username.localeCompare(right.username)
   })
 })
+
+const aiPlatformsSorted = computed(() => {
+  return [...aiPlatforms.value].sort((a, b) => a.platformName.localeCompare(b.platformName) || a.apiUrl.localeCompare(b.apiUrl))
+})
+
+const visibleTriggerRules = computed(() => triggerState.rules.value.filter((rule) => !rule.hidden))
 
 const shortcutRows = computed(() => [
   {
@@ -82,6 +112,12 @@ const shortcutRows = computed(() => [
     keys: 'Command + T',
     action: t('settings.shortcut.action.newTab'),
     scope: t('settings.shortcut.scope.global'),
+  },
+  {
+    id: 'toggle-ai-command-bar',
+    keys: 'Command + K',
+    action: t('settings.shortcut.action.toggleAiCommandBar'),
+    scope: t('settings.shortcut.scope.terminal'),
   },
   {
     id: 'switch-tab',
@@ -131,17 +167,34 @@ const serverEditorDialogConfirmText = computed(() =>
   serverEditorMode.value === 'edit' ? t('settings.server.editConfirm') : t('settings.server.createConfirm'),
 )
 
+const platformEditorDialogOpen = computed(() => platformEditorMode.value !== null)
+const platformEditorDialogTitle = computed(() =>
+  platformEditorMode.value === 'edit' ? t('settings.ai.editTitle') : t('settings.ai.createTitle'),
+)
+const platformEditorConfirmText = computed(() =>
+  platformEditorMode.value === 'edit' ? t('settings.ai.editConfirm') : t('settings.ai.createConfirm'),
+)
+const platformSubmitDisabled = computed(
+  () => !platformForm.platformName.trim() || !platformForm.apiUrl.trim() || !platformForm.apiKey.trim(),
+)
+
 watch(
   () => props.open,
   (open) => {
     if (!open) {
       return
     }
-    void serverState.ensureLoaded()
+    void serverState.ensureLoaded().then(() => {
+      reconcileHiddenServerTriggers()
+    })
     activeTab.value = props.initialTab ?? 'general'
     generalFontSizeDraft.value = String(uiSettings.fontSize.value)
     generalLineHeightDraft.value = String(uiSettings.lineHeight.value)
     cancelServerEditor()
+    cancelPlatformEditor()
+    if (activeTab.value === 'ai') {
+      void loadAIPlatforms()
+    }
   },
 )
 
@@ -181,7 +234,7 @@ function onEscape(event: KeyboardEvent): void {
   if (!props.open) {
     return
   }
-  if (serverEditorDialogOpen.value) {
+  if (serverEditorDialogOpen.value || platformEditorDialogOpen.value) {
     return
   }
   if (event.key === 'Escape') {
@@ -227,6 +280,9 @@ function onLanguageChange(event: Event): void {
     return
   }
   void i18n.setLanguage(value as AppLanguage)
+  if (value !== 'en') {
+    void syncAIResponseLanguageFromUi(value)
+  }
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -315,6 +371,168 @@ async function checkForAppUpdates(): Promise<void> {
 
 function switchTab(tab: SettingsTab): void {
   activeTab.value = tab
+  if (tab === 'ai') {
+    void loadAIPlatforms()
+  }
+}
+
+type SettingsApiLike = {
+  get: (key: string) => Promise<{ ok: boolean; data?: { setting?: { value?: string } } }>
+  set: (key: string, value: string) => Promise<{ ok: boolean }>
+}
+function getSettingsApi(): SettingsApiLike | null {
+  const api = (window as unknown as { electronAPI?: { settings?: SettingsApiLike } }).electronAPI?.settings
+  return api && typeof api.get === 'function' && typeof api.set === 'function' ? api : null
+}
+
+async function syncAIResponseLanguageFromUi(language: string): Promise<void> {
+  const api = getSettingsApi()
+  if (!api) {
+    return
+  }
+  try {
+    await api.set(AI_RESPONSE_LANGUAGE_KEY, language)
+  } catch {
+    // ignore persistence failure
+  }
+}
+
+async function loadAIPlatforms(): Promise<void> {
+  const api = getSettingsApi()
+  if (!api) {
+    return
+  }
+  try {
+    const res = await api.get(AI_PLATFORMS_KEY)
+    if (res.ok && res.data?.setting?.value) {
+      const parsed = JSON.parse(res.data.setting.value) as unknown
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        aiPlatforms.value = parsed.filter(
+          (p): p is AIPlatformRecord =>
+            p != null &&
+            typeof p === 'object' &&
+            typeof (p as AIPlatformRecord).id === 'number' &&
+            typeof (p as AIPlatformRecord).platformName === 'string' &&
+            typeof (p as AIPlatformRecord).apiUrl === 'string' &&
+            typeof (p as AIPlatformRecord).apiKey === 'string' &&
+            typeof (p as AIPlatformRecord).model === 'string',
+        )
+        return
+      }
+    }
+    const [nameRes, urlRes, keyRes, modelRes] = await Promise.all([
+      api.get('ai.platformName'),
+      api.get('ai.apiUrl'),
+      api.get('ai.apiKey'),
+      api.get('ai.model'),
+    ])
+    const name = (nameRes.ok && nameRes.data?.setting?.value) ? nameRes.data.setting.value.trim() : ''
+    const url = (urlRes.ok && urlRes.data?.setting?.value) ? urlRes.data.setting.value.trim() : ''
+    const key = (keyRes.ok && keyRes.data?.setting?.value) ? keyRes.data.setting.value.trim() : ''
+    const model = (modelRes.ok && modelRes.data?.setting?.value) ? modelRes.data.setting.value.trim() : ''
+    if (name || url || key || model) {
+      aiPlatforms.value = [{ id: Date.now(), platformName: name, apiUrl: url, apiKey: key, model }]
+      await saveAIPlatforms()
+    } else {
+      aiPlatforms.value = []
+    }
+  } catch {
+    aiPlatforms.value = []
+  }
+}
+
+async function saveAIPlatforms(): Promise<void> {
+  const api = getSettingsApi()
+  if (!api) {
+    return
+  }
+  const res = await api.set(AI_PLATFORMS_KEY, JSON.stringify(aiPlatforms.value))
+  if (!res.ok) {
+    throw new Error(t('settings.ai.saveFailed'))
+  }
+}
+
+function openCreatePlatformEditor(): void {
+  platformEditorMode.value = 'create'
+  editingPlatformId.value = null
+  platformSubmitting.value = false
+  platformError.value = null
+  platformForm.platformName = ''
+  platformForm.apiUrl = ''
+  platformForm.apiKey = ''
+  platformForm.model = ''
+}
+
+function openEditPlatformEditor(platform: AIPlatformRecord): void {
+  platformEditorMode.value = 'edit'
+  editingPlatformId.value = platform.id
+  platformSubmitting.value = false
+  platformError.value = null
+  platformForm.platformName = platform.platformName
+  platformForm.apiUrl = platform.apiUrl
+  platformForm.apiKey = platform.apiKey
+  platformForm.model = platform.model
+}
+
+function cancelPlatformEditor(): void {
+  platformEditorMode.value = null
+  editingPlatformId.value = null
+  platformSubmitting.value = false
+  platformError.value = null
+}
+
+async function submitPlatformEditor(): Promise<void> {
+  if (!platformEditorMode.value) {
+    return
+  }
+  platformError.value = null
+  platformSubmitting.value = true
+  try {
+    const name = platformForm.platformName.trim()
+    const apiUrl = platformForm.apiUrl.trim()
+    const apiKey = platformForm.apiKey.trim()
+    const model = platformForm.model.trim()
+    if (!name || !apiUrl || !apiKey) {
+      platformError.value = t('settings.ai.error.fieldsRequired')
+      return
+    }
+    if (platformEditorMode.value === 'edit') {
+      const id = editingPlatformId.value
+      if (id == null) {
+        platformError.value = t('settings.ai.error.missingEditId')
+        return
+      }
+      const idx = aiPlatforms.value.findIndex((p) => p.id === id)
+      if (idx >= 0) {
+        aiPlatforms.value = aiPlatforms.value.slice()
+        aiPlatforms.value[idx] = { id, platformName: name, apiUrl, apiKey, model }
+      }
+    } else {
+      aiPlatforms.value = [...aiPlatforms.value, { id: Date.now(), platformName: name, apiUrl, apiKey, model }]
+    }
+    await saveAIPlatforms()
+    cancelPlatformEditor()
+  } catch (err) {
+    platformError.value = getErrorMessage(err, t('settings.ai.saveFailed'))
+  } finally {
+    platformSubmitting.value = false
+  }
+}
+
+async function removeAIPlatform(platform: AIPlatformRecord): Promise<void> {
+  const confirmed = window.confirm(t('settings.ai.deleteConfirm', { name: platform.platformName || t('settings.ai.platformName') }))
+  if (!confirmed) {
+    return
+  }
+  try {
+    aiPlatforms.value = aiPlatforms.value.filter((p) => p.id !== platform.id)
+    await saveAIPlatforms()
+    if (editingPlatformId.value === platform.id) {
+      cancelPlatformEditor()
+    }
+  } catch (err) {
+    globalMessage.error(getErrorMessage(err, t('settings.ai.deleteFailed')), { replace: true })
+  }
 }
 
 function openCreateServerEditor(): void {
@@ -391,9 +609,11 @@ async function submitServerEditor(): Promise<void> {
       if (!serverId) {
         throw new Error(t('settings.server.error.missingEditId'))
       }
-      await serverState.updateServer(serverId, payload)
+      const updated = await serverState.updateServer(serverId, payload)
+      upsertHiddenServerTrigger(updated)
     } else {
-      await serverState.createServer(payload)
+      const created = await serverState.createServer(payload)
+      upsertHiddenServerTrigger(created)
     }
 
     cancelServerEditor()
@@ -416,6 +636,7 @@ async function removeServer(server: ServerRecord): Promise<void> {
 
   try {
     await serverState.deleteServer(server.id)
+    removeHiddenServerTriggers(server.id)
     if (editingServerId.value === server.id) {
       cancelServerEditor()
     }
@@ -431,6 +652,9 @@ function addTriggerRow(): void {
     pattern: '',
     sendText: '',
     enabled: true,
+    autoSend: false,
+    hidden: false,
+    source: 'user',
   })
 }
 
@@ -461,6 +685,93 @@ function toggleTrigger(ruleId: string, enabled: boolean): void {
 function updateTriggerEnabled(ruleId: string, event: Event): void {
   const enabled = (event.target as HTMLInputElement).checked
   toggleTrigger(ruleId, enabled)
+}
+
+function updateTriggerAutoSend(ruleId: string, event: Event): void {
+  const autoSend = (event.target as HTMLInputElement).checked
+  triggerState.updateRule(ruleId, {
+    autoSend,
+  })
+}
+
+function buildServerPasswordPromptPattern(server: Pick<ServerRecord, 'username' | 'host'>): string {
+  return `${server.username}@${server.host}'s password:`
+}
+
+function normalizeServerPassword(server: Pick<ServerRecord, 'password'>): string {
+  const raw = typeof server.password === 'string' ? server.password : ''
+  return raw.trim()
+}
+
+function findHiddenServerTriggerRuleIds(serverId: number): string[] {
+  return triggerState.rules.value
+    .filter(
+      (rule) =>
+        rule.source === 'server_hidden' &&
+        rule.sourceServerId === serverId,
+    )
+    .map((rule) => rule.id)
+}
+
+function removeHiddenServerTriggers(serverId: number): void {
+  for (const ruleId of findHiddenServerTriggerRuleIds(serverId)) {
+    triggerState.removeRule(ruleId)
+  }
+}
+
+function upsertHiddenServerTrigger(server: ServerRecord): void {
+  const username = server.username.trim()
+  const host = server.host.trim()
+  const password = normalizeServerPassword(server)
+  if (!username || !host || !password) {
+    removeHiddenServerTriggers(server.id)
+    return
+  }
+
+  const pattern = buildServerPasswordPromptPattern({ username, host })
+  const existingRuleIds = findHiddenServerTriggerRuleIds(server.id)
+  const primaryRuleId = existingRuleIds[0]
+  if (!primaryRuleId) {
+    triggerState.addRule({
+      pattern,
+      sendText: password,
+      enabled: true,
+      autoSend: true,
+      hidden: true,
+      source: 'server_hidden',
+      sourceServerId: server.id,
+    })
+    return
+  }
+
+  triggerState.updateRule(primaryRuleId, {
+    pattern,
+    sendText: password,
+    enabled: true,
+    autoSend: true,
+    hidden: true,
+    source: 'server_hidden',
+    sourceServerId: server.id,
+  })
+  for (const duplicateRuleId of existingRuleIds.slice(1)) {
+    triggerState.removeRule(duplicateRuleId)
+  }
+}
+
+function reconcileHiddenServerTriggers(): void {
+  const serversById = new Map(serverState.servers.value.map((server) => [server.id, server]))
+  const allRules = [...triggerState.rules.value]
+  const staleRuleIds = allRules
+    .filter((rule) => rule.source === 'server_hidden' && (!rule.sourceServerId || !serversById.has(rule.sourceServerId)))
+    .map((rule) => rule.id)
+
+  for (const staleRuleId of staleRuleIds) {
+    triggerState.removeRule(staleRuleId)
+  }
+
+  for (const server of serverState.servers.value) {
+    upsertHiddenServerTrigger(server)
+  }
 }
 </script>
 
@@ -512,6 +823,16 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
             @click="switchTab('triggers')"
           >
             {{ t('settings.tab.triggers') }}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="global-settings-tabs__item"
+            :class="{ active: activeTab === 'ai' }"
+            :aria-selected="activeTab === 'ai'"
+            @click="switchTab('ai')"
+          >
+            {{ t('settings.tab.ai') }}
           </button>
         </nav>
 
@@ -620,13 +941,13 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
             </div>
           </section>
 
-          <section v-else class="tab-pane trigger-tab">
+          <section v-else-if="activeTab === 'triggers'" class="tab-pane trigger-tab">
             <div class="trigger-tab__toolbar">
               <button type="button" @click="addTriggerRow">{{ t('settings.trigger.add') }}</button>
             </div>
-            <div v-if="triggerState.rules.value.length === 0" class="empty-tip">{{ t('settings.trigger.empty') }}</div>
+            <div v-if="visibleTriggerRules.length === 0" class="empty-tip">{{ t('settings.trigger.empty') }}</div>
             <div v-else class="trigger-list">
-              <article v-for="rule in triggerState.rules.value" :key="rule.id" class="trigger-row">
+              <article v-for="rule in visibleTriggerRules" :key="rule.id" class="trigger-row">
                 <input
                   :value="rule.pattern"
                   type="text"
@@ -643,10 +964,53 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
                   <input type="checkbox" :checked="rule.enabled" @change="updateTriggerEnabled(rule.id, $event)" />
                   <span>{{ t('settings.trigger.enabled') }}</span>
                 </label>
-                <button type="button" class="danger" @click="removeTriggerRow(rule.id)">
+                <label class="trigger-enable">
+                  <input type="checkbox" :checked="rule.autoSend" @change="updateTriggerAutoSend(rule.id, $event)" />
+                  <span>{{ t('settings.trigger.autoSend') }}</span>
+                </label>
+                <button type="button" class="ai-platform-row__btn ai-platform-row__btn--delete" @click="removeTriggerRow(rule.id)">
                   {{ t('settings.trigger.delete') }}
                 </button>
               </article>
+            </div>
+          </section>
+
+          <section v-else-if="activeTab === 'ai'" class="tab-pane ai-tab">
+            <div class="ai-tab__toolbar">
+              <button type="button" @click="openCreatePlatformEditor">{{ t('settings.ai.add') }}</button>
+              <span class="ai-tab__hint">{{ t('settings.ai.localStorageHint') }}</span>
+            </div>
+            <div class="ai-platform-table">
+              <header class="ai-platform-table__head">
+                <span class="ai-platform-table__name">{{ t('settings.ai.platformName') }}</span>
+                <span class="ai-platform-table__url">{{ t('settings.ai.apiUrl') }}</span>
+                <span class="ai-platform-table__model">{{ t('settings.ai.model') }}</span>
+                <span class="ai-platform-table__actions">Control</span>
+              </header>
+              <div class="ai-platform-list">
+                <p v-if="aiPlatformsSorted.length === 0" class="empty-tip">{{ t('settings.ai.empty') }}</p>
+                <article v-for="platform in aiPlatformsSorted" :key="platform.id" class="ai-platform-row">
+                  <strong class="ai-platform-row__name" :title="platform.platformName">{{ platform.platformName || '—' }}</strong>
+                  <span class="ai-platform-row__url" :title="platform.apiUrl">{{ platform.apiUrl || '—' }}</span>
+                  <span class="ai-platform-row__model" :title="platform.model">{{ platform.model || '—' }}</span>
+                  <div class="ai-platform-row__actions">
+                    <button
+                      type="button"
+                      class="ai-platform-row__btn ai-platform-row__btn--edit"
+                      @click="openEditPlatformEditor(platform)"
+                    >
+                      {{ t('settings.server.edit') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="ai-platform-row__btn ai-platform-row__btn--delete"
+                      @click="void removeAIPlatform(platform)"
+                    >
+                      {{ t('settings.server.delete') }}
+                    </button>
+                  </div>
+                </article>
+              </div>
             </div>
           </section>
         </div>
@@ -699,6 +1063,46 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
             </label>
 
             <p v-if="serverError" class="form-error">{{ serverError }}</p>
+          </form>
+        </AppDialog>
+
+        <AppDialog
+          :open="platformEditorDialogOpen"
+          :title="platformEditorDialogTitle"
+          :confirm-text="platformEditorConfirmText"
+          :cancel-text="t('settings.cancel')"
+          :confirm-disabled="platformSubmitDisabled"
+          :loading="platformSubmitting"
+          @close="cancelPlatformEditor"
+          @confirm="void submitPlatformEditor()"
+        >
+          <form class="server-editor-form ai-platform-editor-form" @submit.prevent="void submitPlatformEditor()">
+            <label>
+              <span>
+                {{ t('settings.ai.platformName') }}
+                <em class="server-editor-form__required" aria-hidden="true">*</em>
+              </span>
+              <input v-model="platformForm.platformName" type="text" />
+            </label>
+            <label>
+              <span>
+                {{ t('settings.ai.apiUrl') }}
+                <em class="server-editor-form__required" aria-hidden="true">*</em>
+              </span>
+              <input v-model="platformForm.apiUrl" type="url" placeholder="https://api.openai.com/v1" />
+            </label>
+            <label>
+              <span>
+                {{ t('settings.ai.apiKey') }}
+                <em class="server-editor-form__required" aria-hidden="true">*</em>
+              </span>
+              <input v-model="platformForm.apiKey" type="text" autocomplete="off" />
+            </label>
+            <label>
+              <span>{{ t('settings.ai.model') }}</span>
+              <input v-model="platformForm.model" type="text" :placeholder="t('settings.ai.modelPlaceholder')" />
+            </label>
+            <p v-if="platformError" class="form-error">{{ platformError }}</p>
           </form>
         </AppDialog>
       </section>
@@ -880,10 +1284,149 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
   font-size: 13px;
 }
 
-.server-tab {
+.server-tab,
+.ai-tab {
   gap: 12px;
 }
 
+.ai-tab__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ai-tab__hint {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.3;
+}
+
+.ai-platform-table {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.ai-platform-table__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.ai-platform-table__name {
+  flex: 0 1 180px;
+  min-width: 120px;
+  max-width: 240px;
+}
+
+.ai-platform-table__url {
+  flex: 1 1 320px;
+  min-width: 0;
+  max-width: 420px;
+}
+
+.ai-platform-table__model {
+  flex: 0 1 180px;
+  min-width: 0;
+  max-width: 240px;
+}
+
+.ai-platform-table__actions {
+  margin-left: auto;
+  min-width: 96px;
+  text-align: right;
+}
+
+.ai-platform-list {
+  min-height: 44px;
+}
+
+.ai-platform-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 13px;
+}
+
+.ai-platform-row:last-child {
+  border-bottom: 0;
+}
+
+.ai-platform-row__name {
+  flex: 0 1 180px;
+  min-width: 120px;
+  max-width: 240px;
+  font-weight: 600;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-platform-row__url {
+  flex: 1 1 320px;
+  min-width: 0;
+  max-width: 420px;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-platform-row__model {
+  flex: 0 1 180px;
+  min-width: 0;
+  max-width: 240px;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-platform-row__actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  min-width: 96px;
+  justify-content: flex-end;
+}
+
+.ai-platform-row__btn {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-platform-row__btn:hover {
+  background: #eef2f7;
+  border-color: #94a3b8;
+}
+
+.ai-platform-row__btn--delete {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.ai-platform-row__btn--delete:hover {
+  background: #fee2e2;
+  border-color: #f87171;
+}
+
+.ai-tab__toolbar,
 .server-tab__toolbar,
 .trigger-tab__toolbar {
   display: flex;
@@ -893,6 +1436,7 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
   justify-content: flex-start;
 }
 
+.ai-tab__toolbar button,
 .server-tab__toolbar button,
 .trigger-tab__toolbar button {
   height: 30px;
@@ -940,6 +1484,7 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
 .server-editor-form input[type='text'],
 .server-editor-form input[type='number'],
 .server-editor-form input[type='password'],
+.server-editor-form input[type='url'],
 .server-editor-form select,
 .trigger-row input {
   height: 32px;
@@ -954,6 +1499,7 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
 .server-editor-form input[type='text'],
 .server-editor-form input[type='number'],
 .server-editor-form input[type='password'],
+.server-editor-form input[type='url'],
 .server-editor-form select {
   width: 100%;
 }
@@ -967,6 +1513,31 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
   color: #334155;
   padding: 0 10px;
   cursor: pointer;
+}
+
+.trigger-row .ai-platform-row__btn {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 12px;
+}
+
+.trigger-row .ai-platform-row__btn:hover {
+  background: #eef2f7;
+  border-color: #94a3b8;
+}
+
+.trigger-row .ai-platform-row__btn--delete {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.trigger-row .ai-platform-row__btn--delete:hover {
+  background: #fee2e2;
+  border-color: #f87171;
 }
 
 .server-editor-form .form-error {
@@ -1015,7 +1586,8 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
   text-align: right;
 }
 
-.server-list .empty-tip {
+.server-list .empty-tip,
+.ai-platform-list .empty-tip {
   margin: 0;
   padding: 14px 10px;
 }
@@ -1175,7 +1747,7 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
 
 .trigger-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto auto;
   gap: 8px;
 }
 
@@ -1203,11 +1775,6 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
   line-height: 1;
 }
 
-.danger {
-  border-color: #7f1d1d !important;
-  color: #fecaca !important;
-}
-
 .form-error {
   margin: 0;
   color: #fca5a5;
@@ -1227,6 +1794,15 @@ function updateTriggerEnabled(ruleId: string, event: Event): void {
 
   .server-editor-form .form-error {
     padding-left: 0;
+  }
+
+  .ai-tab__field {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .ai-tab__label {
+    text-align: left;
   }
 }
 </style>

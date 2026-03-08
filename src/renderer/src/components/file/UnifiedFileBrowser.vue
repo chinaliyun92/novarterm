@@ -3,6 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useGlobalMessage } from '../../composables/useGlobalMessage'
 import { useI18n } from '../../composables/useI18n'
 
+const i18n = useI18n()
+const globalMessage = useGlobalMessage()
+
+function t(key: string, params?: Record<string, string | number>): string {
+  return i18n.t(key, params)
+}
+
 export interface UnifiedFileEntry {
   name: string
   path: string
@@ -10,6 +17,18 @@ export interface UnifiedFileEntry {
   size: number | null
   modifiedAt: string | null
   raw?: unknown
+}
+
+export interface UnifiedUploadProgress {
+  active: boolean
+  total: number
+  completed: number
+  percent: number
+  currentFileName: string | null
+}
+
+interface FileWithPath extends File {
+  path?: string
 }
 
 interface UnifiedFileListResult {
@@ -52,13 +71,18 @@ const props = withDefaults(
     onRenameEntry?: ((entry: UnifiedFileEntry, nextName: string) => Promise<void> | void) | null
     onDeleteEntry?: ((entry: UnifiedFileEntry) => Promise<void> | void) | null
     onUploadFiles?: ((currentPath: string, files: File[]) => Promise<void> | void) | null
+    onUploadDirectory?: ((currentPath: string, files: File[]) => Promise<void> | void) | null
+    onUploadPaths?: ((currentPath: string, paths: string[]) => Promise<void> | void) | null
     onDownloadEntry?: ((entry: UnifiedFileEntry) => Promise<void> | void) | null
     canDownloadEntry?: ((entry: UnifiedFileEntry) => boolean) | null
+    onExtractEntry?: ((entry: UnifiedFileEntry) => Promise<void> | void) | null
+    canExtractEntry?: ((entry: UnifiedFileEntry) => boolean) | null
+    uploadProgress?: UnifiedUploadProgress | null
   }>(),
   {
     paneSessionId: null,
     reloadKey: undefined,
-    emptyText: '当前目录为空',
+    emptyText: '',
     showHiddenToggle: true,
     useActionContextMenu: false,
     hideCreateActionButtons: false,
@@ -68,8 +92,13 @@ const props = withDefaults(
     onRenameEntry: null,
     onDeleteEntry: null,
     onUploadFiles: null,
+    onUploadDirectory: null,
+    onUploadPaths: null,
     onDownloadEntry: null,
     canDownloadEntry: null,
+    onExtractEntry: null,
+    canExtractEntry: null,
+    uploadProgress: null,
   },
 )
 
@@ -80,8 +109,6 @@ const emit = defineEmits<{
 }>()
 
 const FILE_PANE_NAVIGATE_UP_EVENT = 'iterm:file-pane:navigate-up'
-const i18n = useI18n()
-const globalMessage = useGlobalMessage()
 
 const loading = ref(false)
 const currentPath = ref('')
@@ -91,6 +118,7 @@ const showHiddenEntries = ref(true)
 const selectedEntryPath = ref<string | null>(null)
 const activeLoadRequestId = ref(0)
 const uploadInputRef = ref<HTMLInputElement | null>(null)
+const uploadDirectoryInputRef = ref<HTMLInputElement | null>(null)
 const contextMenuRef = ref<HTMLElement | null>(null)
 const nameInputRef = ref<HTMLInputElement | null>(null)
 const actionContextMenu = ref<ActionContextMenuState>({
@@ -103,7 +131,7 @@ const nameDialog = reactive<NameDialogState>({
   open: false,
   title: '',
   placeholder: '',
-  confirmLabel: '确定',
+  confirmLabel: t('file.dialog.confirmDefault'),
   value: '',
   busy: false,
   error: null,
@@ -117,21 +145,44 @@ const visibleEntries = computed<UnifiedFileEntry[]>(() => {
   return entries.value
 })
 
+const resolvedEmptyText = computed<string>(() => {
+  const value = props.emptyText?.trim() ?? ''
+  return value || t('file.emptyDirectory')
+})
+
 const canCreateFile = computed(() => typeof props.onCreateFile === 'function')
 const canCreateDirectory = computed(() => typeof props.onCreateDirectory === 'function')
 const canRename = computed(() => typeof props.onRenameEntry === 'function')
 const canDelete = computed(() => typeof props.onDeleteEntry === 'function')
 const canUpload = computed(() => typeof props.onUploadFiles === 'function')
+const canUploadDirectory = computed(() => typeof props.onUploadDirectory === 'function')
 const canDownload = computed(() => typeof props.onDownloadEntry === 'function')
+const canExtract = computed(() => typeof props.onExtractEntry === 'function')
 const showCreateButtons = computed(() => !props.hideCreateActionButtons)
 const showRowActionButtons = computed(() => !props.hideRowActionButtons)
-const hasActionContextMenuItems = computed(() => {
-  return canCreateFile.value || canCreateDirectory.value || canRename.value || canDelete.value || canDownload.value
+const isUploading = computed(() => props.uploadProgress?.active === true)
+const uploadProgressPercent = computed(() => {
+  const value = props.uploadProgress?.percent ?? 0
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+  return Math.max(0, Math.min(100, Math.round(value)))
 })
-
-function t(key: string, params?: Record<string, string | number>): string {
-  return i18n.t(key, params)
-}
+const uploadProgressLabel = computed(() => {
+  const completed = props.uploadProgress?.completed ?? 0
+  const total = props.uploadProgress?.total ?? 0
+  return `${completed}/${total}`
+})
+const hasActionContextMenuItems = computed(() => {
+  return (
+    canCreateFile.value ||
+    canCreateDirectory.value ||
+    canRename.value ||
+    canDelete.value ||
+    canDownload.value ||
+    canExtract.value
+  )
+})
 
 function formatFileSize(size: number | null): string {
   if (!Number.isFinite(size) || size === null || size < 0) {
@@ -179,6 +230,18 @@ function shouldAllowDownload(entry: UnifiedFileEntry): boolean {
   }
 
   return entry.type === 'file'
+}
+
+function shouldAllowExtract(entry: UnifiedFileEntry): boolean {
+  if (!canExtract.value) {
+    return false
+  }
+
+  if (typeof props.canExtractEntry === 'function') {
+    return props.canExtractEntry(entry)
+  }
+
+  return entry.type === 'file' && /\.zip$/i.test(entry.name)
 }
 
 function selectEntry(entry: UnifiedFileEntry): void {
@@ -277,7 +340,7 @@ function closeNameDialog(): void {
   nameDialog.open = false
   nameDialog.title = ''
   nameDialog.placeholder = ''
-  nameDialog.confirmLabel = '确定'
+  nameDialog.confirmLabel = t('file.dialog.confirmDefault')
   nameDialog.value = ''
   nameDialog.error = null
   nameDialog.onSubmit = null
@@ -391,24 +454,24 @@ async function createFile(): Promise<void> {
   }
 
   if (!currentPath.value) {
-    setActionError('当前目录不可用，请先刷新目录。')
+    setActionError(t('file.error.currentPathUnavailable'))
     return
   }
 
   openNameDialog({
-    title: '新建文件',
-    placeholder: '请输入新文件名',
+    title: t('file.dialog.createFile.title'),
+    placeholder: t('file.dialog.createFile.placeholder'),
     initialValue: 'new-file.txt',
-    confirmLabel: '创建',
+    confirmLabel: t('file.dialog.createFile.confirm'),
     onSubmit: async (value: string) => {
       const normalizedName = value.trim()
       if (!normalizedName) {
-        throw new Error('文件名不能为空。')
+        throw new Error(t('file.dialog.createFile.nameRequired'))
       }
 
       await props.onCreateFile?.(currentPath.value, normalizedName)
       await loadPath(currentPath.value)
-      setActionMessage(`已创建文件：${normalizedName}`)
+      setActionMessage(t('file.message.createdFile', { name: normalizedName }))
     },
   })
 }
@@ -420,24 +483,24 @@ async function createDirectory(): Promise<void> {
   }
 
   if (!currentPath.value) {
-    setActionError('当前目录不可用，请先刷新目录。')
+    setActionError(t('file.error.currentPathUnavailable'))
     return
   }
 
   openNameDialog({
-    title: '新建文件夹',
-    placeholder: '请输入新文件夹名称',
+    title: t('file.dialog.createDirectory.title'),
+    placeholder: t('file.dialog.createDirectory.placeholder'),
     initialValue: 'new-folder',
-    confirmLabel: '创建',
+    confirmLabel: t('file.dialog.createDirectory.confirm'),
     onSubmit: async (value: string) => {
       const normalizedName = value.trim()
       if (!normalizedName) {
-        throw new Error('文件夹名不能为空。')
+        throw new Error(t('file.dialog.createDirectory.nameRequired'))
       }
 
       await props.onCreateDirectory?.(currentPath.value, normalizedName)
       await loadPath(currentPath.value)
-      setActionMessage(`已创建文件夹：${normalizedName}`)
+      setActionMessage(t('file.message.createdDirectory', { name: normalizedName }))
     },
   })
 }
@@ -449,14 +512,14 @@ async function renameEntry(entry: UnifiedFileEntry): Promise<void> {
   }
 
   openNameDialog({
-    title: '重命名',
-    placeholder: '请输入新名称',
+    title: t('file.dialog.rename.title'),
+    placeholder: t('file.dialog.rename.placeholder'),
     initialValue: entry.name,
-    confirmLabel: '保存',
+    confirmLabel: t('file.dialog.rename.confirm'),
     onSubmit: async (value: string) => {
       const normalizedName = value.trim()
       if (!normalizedName) {
-        throw new Error('名称不能为空。')
+        throw new Error(t('file.dialog.rename.nameRequired'))
       }
       if (normalizedName === entry.name) {
         return
@@ -464,7 +527,7 @@ async function renameEntry(entry: UnifiedFileEntry): Promise<void> {
 
       await props.onRenameEntry?.(entry, normalizedName)
       await loadPath(currentPath.value)
-      setActionMessage(`已重命名为：${normalizedName}`)
+      setActionMessage(t('file.message.renamed', { name: normalizedName }))
     },
   })
 }
@@ -475,7 +538,7 @@ async function deleteEntry(entry: UnifiedFileEntry): Promise<void> {
     return
   }
 
-  const confirmed = window.confirm(`确认删除「${entry.name}」吗？`)
+  const confirmed = window.confirm(t('file.confirm.deleteEntry', { name: entry.name }))
   if (!confirmed) {
     return
   }
@@ -483,7 +546,7 @@ async function deleteEntry(entry: UnifiedFileEntry): Promise<void> {
   try {
     await props.onDeleteEntry(entry)
     await loadPath(currentPath.value)
-    setActionMessage(`已删除：${entry.name}`)
+    setActionMessage(t('file.message.deleted', { name: entry.name }))
   } catch (reason) {
     setActionError(reason instanceof Error ? reason.message : String(reason))
   }
@@ -497,14 +560,31 @@ async function downloadEntry(entry: UnifiedFileEntry): Promise<void> {
 
   try {
     await props.onDownloadEntry(entry)
-    setActionMessage(`下载完成：${entry.name}`)
+    setActionMessage(t('file.message.downloadCompleted', { name: entry.name }))
+  } catch (reason) {
+    setActionError(reason instanceof Error ? reason.message : String(reason))
+  }
+}
+
+async function extractEntry(entry: UnifiedFileEntry): Promise<void> {
+  closeActionContextMenu()
+  if (!props.onExtractEntry || !shouldAllowExtract(entry)) {
+    return
+  }
+
+  try {
+    await props.onExtractEntry(entry)
+    if (currentPath.value) {
+      await loadPath(currentPath.value)
+    }
+    setActionMessage(t('file.message.extractCompleted', { name: entry.name }))
   } catch (reason) {
     setActionError(reason instanceof Error ? reason.message : String(reason))
   }
 }
 
 function triggerUploadPicker(): void {
-  if (!props.onUploadFiles || loading.value) {
+  if (!props.onUploadFiles || loading.value || isUploading.value) {
     return
   }
 
@@ -516,6 +596,7 @@ async function handleUploadSelection(event: Event): Promise<void> {
     return
   }
 
+  const targetPath = currentPath.value
   const target = event.target as HTMLInputElement
   const files = target.files ? Array.from(target.files) : []
   target.value = ''
@@ -524,9 +605,246 @@ async function handleUploadSelection(event: Event): Promise<void> {
   }
 
   try {
-    await props.onUploadFiles(currentPath.value, files)
-    await loadPath(currentPath.value)
-    setActionMessage(`上传完成：${files.length} 个文件`)
+    await props.onUploadFiles(targetPath, files)
+    await loadPath(targetPath)
+    setActionMessage(
+      t('file.upload.completed', {
+        count: files.length,
+      }),
+    )
+  } catch (reason) {
+    setActionError(reason instanceof Error ? reason.message : String(reason))
+  }
+}
+
+function triggerUploadDirectoryPicker(): void {
+  if (!props.onUploadDirectory || loading.value || isUploading.value) {
+    return
+  }
+
+  uploadDirectoryInputRef.value?.click()
+}
+
+async function handleUploadDirectorySelection(event: Event): Promise<void> {
+  if (!props.onUploadDirectory || !currentPath.value) {
+    return
+  }
+
+  const targetPath = currentPath.value
+  const target = event.target as HTMLInputElement
+  const files = target.files ? Array.from(target.files) : []
+  target.value = ''
+  if (!files.length) {
+    return
+  }
+
+  try {
+    await props.onUploadDirectory(targetPath, files)
+    await loadPath(targetPath)
+    setActionMessage(
+      t('file.upload.directoryCompleted', {
+        count: files.length,
+      }),
+    )
+  } catch (reason) {
+    setActionError(reason instanceof Error ? reason.message : String(reason))
+  }
+}
+
+function isFileDropEvent(event: DragEvent): boolean {
+  const types = event.dataTransfer?.types
+  if (!types) {
+    return false
+  }
+
+  const typeList = Array.from(types)
+  return typeList.includes('Files') || typeList.includes('text/uri-list')
+}
+
+function isAbsoluteLocalPath(value: string): boolean {
+  if (!value) {
+    return false
+  }
+
+  if (value.startsWith('/')) {
+    return true
+  }
+
+  if (/^[A-Za-z]:[\\/]/.test(value)) {
+    return true
+  }
+
+  return value.startsWith('\\\\')
+}
+
+function normalizeAbsolutePathCandidate(raw: string): string | null {
+  const value = raw.trim()
+  if (!value || !isAbsoluteLocalPath(value)) {
+    return null
+  }
+  return value
+}
+
+function toAbsolutePathFromFileUrl(rawUrl: string): string | null {
+  const candidate = rawUrl.trim()
+  if (!candidate) {
+    return null
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(candidate)
+  } catch {
+    return null
+  }
+
+  if (parsed.protocol !== 'file:') {
+    return null
+  }
+
+  let pathname = decodeURIComponent(parsed.pathname || '')
+  if (!pathname) {
+    return null
+  }
+
+  if (/^\/[A-Za-z]:\//.test(pathname)) {
+    pathname = pathname.slice(1)
+  }
+
+  if (parsed.host) {
+    pathname = `//${parsed.host}${pathname}`
+  }
+
+  return normalizeAbsolutePathCandidate(pathname)
+}
+
+function extractAbsolutePathsFromUriList(raw: string): string[] {
+  if (!raw.trim()) {
+    return []
+  }
+
+  return raw
+    .split(/\r\n|\r|\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'))
+    .map((line) => toAbsolutePathFromFileUrl(line))
+    .filter((value): value is string => typeof value === 'string')
+}
+
+function extractAbsolutePathsFromPlainText(raw: string): string[] {
+  if (!raw.trim()) {
+    return []
+  }
+
+  const lines = raw
+    .split(/\r\n|\r|\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+
+  const result: string[] = []
+  for (const line of lines) {
+    if (line.startsWith('file://')) {
+      const fromUrl = toAbsolutePathFromFileUrl(line)
+      if (fromUrl) {
+        result.push(fromUrl)
+      }
+      continue
+    }
+
+    const normalized = normalizeAbsolutePathCandidate(line)
+    if (normalized) {
+      result.push(normalized)
+    }
+  }
+
+  return result
+}
+
+function resolveAbsolutePathFromDroppedFile(file: FileWithPath): string | null {
+  const directPath = normalizeAbsolutePathCandidate(file.path ?? '')
+  if (directPath) {
+    return directPath
+  }
+
+  const resolved = window.electronAPI.terminal.resolveFilePath?.(file)
+  if (typeof resolved === 'string' && resolved.trim()) {
+    return normalizeAbsolutePathCandidate(resolved)
+  }
+
+  return null
+}
+
+async function toDroppedAbsolutePaths(event: DragEvent): Promise<string[]> {
+  const pathSet = new Set<string>()
+
+  const fileList = event.dataTransfer?.files
+  if (fileList?.length) {
+    for (const file of Array.from(fileList)) {
+      const resolvedPath = resolveAbsolutePathFromDroppedFile(file as FileWithPath)
+      if (resolvedPath) {
+        pathSet.add(resolvedPath)
+      }
+    }
+  }
+
+  const uriList = event.dataTransfer?.getData('text/uri-list') ?? ''
+  for (const path of extractAbsolutePathsFromUriList(uriList)) {
+    pathSet.add(path)
+  }
+
+  const plainText = event.dataTransfer?.getData('text/plain') ?? ''
+  for (const path of extractAbsolutePathsFromPlainText(plainText)) {
+    pathSet.add(path)
+  }
+
+  return Array.from(pathSet)
+}
+
+function handleFileDragEnter(event: DragEvent): void {
+  if (!isFileDropEvent(event)) {
+    return
+  }
+
+  event.preventDefault()
+}
+
+function handleFileDragOver(event: DragEvent): void {
+  if (!isFileDropEvent(event)) {
+    return
+  }
+
+  event.preventDefault()
+  if (event.dataTransfer && props.onUploadPaths && !loading.value && !isUploading.value) {
+    event.dataTransfer.dropEffect = 'copy'
+  }
+}
+
+async function handleFileDropUpload(event: DragEvent): Promise<void> {
+  if (!isFileDropEvent(event)) {
+    return
+  }
+
+  event.preventDefault()
+  event.stopPropagation()
+
+  if (!props.onUploadPaths || loading.value || isUploading.value || !currentPath.value) {
+    return
+  }
+
+  const targetPath = currentPath.value
+  const paths = await toDroppedAbsolutePaths(event)
+  if (!paths.length) {
+    return
+  }
+
+  try {
+    await props.onUploadPaths(targetPath, paths)
+    await loadPath(targetPath)
+    setActionMessage(
+      t('file.upload.completed', {
+        count: paths.length,
+      }),
+    )
   } catch (reason) {
     setActionError(reason instanceof Error ? reason.message : String(reason))
   }
@@ -625,7 +943,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="unified-file-browser" @contextmenu="handleListContextMenu">
+  <section
+    class="unified-file-browser"
+    @contextmenu="handleListContextMenu"
+    @dragenter="handleFileDragEnter"
+    @dragover="handleFileDragOver"
+    @drop="void handleFileDropUpload($event)"
+  >
     <header class="unified-file-browser__toolbar">
       <div class="toolbar-icon-group">
         <button
@@ -693,9 +1017,25 @@ onBeforeUnmount(() => {
         <span class="toolbar-action-icon i-mdi-folder-plus-outline" aria-hidden="true" />
         <span>{{ t('file.toolbar.createDirectory') }}</span>
       </button>
-      <button v-if="canUpload" type="button" class="toolbar-action-btn" :disabled="loading" @click="triggerUploadPicker">
+      <button
+        v-if="canUpload"
+        type="button"
+        class="toolbar-action-btn"
+        :disabled="loading || isUploading"
+        @click="triggerUploadPicker"
+      >
         <span class="toolbar-action-icon i-mdi-upload-outline" aria-hidden="true" />
         <span>{{ t('file.toolbar.upload') }}</span>
+      </button>
+      <button
+        v-if="canUploadDirectory"
+        type="button"
+        class="toolbar-action-btn"
+        :disabled="loading || isUploading"
+        @click="triggerUploadDirectoryPicker"
+      >
+        <span class="toolbar-action-icon i-mdi-folder-upload-outline" aria-hidden="true" />
+        <span>{{ t('file.toolbar.uploadDirectory') }}</span>
       </button>
       <input
         v-if="canUpload"
@@ -705,10 +1045,20 @@ onBeforeUnmount(() => {
         class="unified-file-browser__upload-input"
         @change="void handleUploadSelection($event)"
       />
+      <input
+        v-if="canUploadDirectory"
+        ref="uploadDirectoryInputRef"
+        type="file"
+        multiple
+        webkitdirectory
+        directory
+        class="unified-file-browser__upload-input"
+        @change="void handleUploadDirectorySelection($event)"
+      />
     </header>
 
-    <p v-if="loading" class="unified-file-browser__message">加载中...</p>
-    <p v-else-if="visibleEntries.length === 0" class="unified-file-browser__message">{{ props.emptyText }}</p>
+    <p v-if="loading" class="unified-file-browser__message">{{ t('file.loading') }}</p>
+    <p v-else-if="visibleEntries.length === 0" class="unified-file-browser__message">{{ resolvedEmptyText }}</p>
 
     <ul v-else class="unified-file-browser__list" @contextmenu="handleListContextMenu">
       <li
@@ -729,18 +1079,31 @@ onBeforeUnmount(() => {
         </div>
         <span>{{ formatFileSize(entry.size) }}</span>
         <span>{{ formatMtime(entry.modifiedAt) }}</span>
-        <span v-if="showRowActionButtons && (canRename || canDelete || canDownload)" class="unified-file-browser__actions">
-          <button v-if="canRename" type="button" :disabled="loading" @click.stop="void renameEntry(entry)">重命名</button>
+        <span
+          v-if="showRowActionButtons && (canRename || canDelete || canDownload || canExtract)"
+          class="unified-file-browser__actions"
+        >
+          <button v-if="canRename" type="button" :disabled="loading" @click.stop="void renameEntry(entry)">
+            {{ t('file.menu.rename') }}
+          </button>
           <button
             v-if="canDownload && shouldAllowDownload(entry)"
             type="button"
             :disabled="loading"
             @click.stop="void downloadEntry(entry)"
           >
-            下载
+            {{ t('file.menu.download') }}
+          </button>
+          <button
+            v-if="canExtract && shouldAllowExtract(entry)"
+            type="button"
+            :disabled="loading"
+            @click.stop="void extractEntry(entry)"
+          >
+            {{ t('file.menu.extract') }}
           </button>
           <button v-if="canDelete" type="button" class="danger" :disabled="loading" @click.stop="void deleteEntry(entry)">
-            删除
+            {{ t('file.menu.delete') }}
           </button>
         </span>
       </li>
@@ -792,6 +1155,15 @@ onBeforeUnmount(() => {
         {{ t('file.menu.download') }}
       </button>
       <button
+        v-if="canExtract && actionContextMenu.entry && shouldAllowExtract(actionContextMenu.entry)"
+        type="button"
+        role="menuitem"
+        :disabled="loading"
+        @click.stop="void extractEntry(actionContextMenu.entry)"
+      >
+        {{ t('file.menu.extract') }}
+      </button>
+      <button
         v-if="canDelete && actionContextMenu.entry"
         type="button"
         role="menuitem"
@@ -822,7 +1194,7 @@ onBeforeUnmount(() => {
         />
         <p v-if="nameDialog.error" class="is-error">{{ nameDialog.error }}</p>
         <div class="unified-file-browser__dialog-actions">
-          <button type="button" :disabled="nameDialog.busy" @click="closeNameDialog">取消</button>
+          <button type="button" :disabled="nameDialog.busy" @click="closeNameDialog">{{ t('settings.cancel') }}</button>
           <button type="button" :disabled="nameDialog.busy" @click="void submitNameDialog()">
             {{ nameDialog.confirmLabel }}
           </button>
@@ -918,6 +1290,7 @@ onBeforeUnmount(() => {
   clip: rect(0, 0, 0, 0);
   overflow: hidden;
 }
+
 
 .unified-file-browser__message {
   margin: 0;

@@ -1,5 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch, type CSSProperties } from 'vue'
+import { useGlobalMessage } from '../../composables/useGlobalMessage'
+import { useI18n } from '../../composables/useI18n'
+import { useServerSidebarState } from '../../composables/useServerSidebarState'
+import { useTerminalWorkspaceState } from '../../composables/useTerminalWorkspaceState'
+import type { ServerRecord } from '../../types/server'
 import type { SplitLayoutLeafNode, SplitLayoutNode, TerminalSession } from '../../types/terminal'
 import LocalFileBrowser from '../file/LocalFileBrowser.vue'
 import RemoteFileBrowser from '../file/RemoteFileBrowser.vue'
@@ -30,7 +35,21 @@ const DRAG_MIN_RATIO = 0.05
 const DRAG_MAX_RATIO = 0.95
 const MIN_PANE_SIZE_PX = 120
 const DRAG_EPSILON = 0.001
+const FILE_PANE_LOCAL_SOURCE_VALUE = 'local'
+const FILE_PANE_REMOTE_UNBOUND_SOURCE_VALUE = '__remote_unbound__'
+const FILE_PANE_LOADING_SOURCE_VALUE = '__loading__'
+const FILE_PANE_SERVER_SOURCE_PREFIX = 'server:'
 let removeDragListeners: (() => void) | null = null
+
+const i18n = useI18n()
+const globalMessage = useGlobalMessage()
+const serverState = useServerSidebarState()
+const workspace = useTerminalWorkspaceState()
+const switchingFilePaneSessionId = ref<string | null>(null)
+
+function t(key: string, params?: Record<string, string | number>): string {
+  return i18n.t(key, params)
+}
 
 function emitFocusPane(paneId: string): void {
   emit('focus-pane', paneId)
@@ -62,12 +81,15 @@ function isLeafFocused(node: SplitLayoutNode): boolean {
 
 function resolvePaneLabel(session: TerminalSession | undefined): string {
   if (!session) {
-    return 'local'
+    return t('terminal.pane.label.local')
   }
 
   if (session.kind === 'file') {
     const path = resolveFilePanePath(session)
-    const prefix = session.filePaneSourceKind === 'ssh' ? 'remote' : 'local'
+    const prefix =
+      session.filePaneSourceKind === 'ssh'
+        ? t('terminal.pane.label.remote')
+        : t('terminal.pane.label.local')
     return `${prefix}:${path || '/'}`
   }
 
@@ -84,7 +106,7 @@ function resolvePaneLabel(session: TerminalSession | undefined): string {
     return 'bash'
   }
 
-  return 'local'
+  return t('terminal.pane.label.local')
 }
 
 function isFilePaneSession(session: TerminalSession | undefined): boolean {
@@ -107,6 +129,146 @@ function resolveFilePaneSourceKind(session: TerminalSession | undefined): 'local
 function resolveFilePaneSourceSessionId(session: TerminalSession | undefined): string | null {
   const value = session?.filePaneSourceSessionId?.trim() ?? ''
   return value || null
+}
+
+function formatErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+
+  if (typeof error === 'string' && error.trim()) {
+    return error
+  }
+
+  return fallback
+}
+
+function toServerSourceValue(serverId: number): string {
+  return `${FILE_PANE_SERVER_SOURCE_PREFIX}${serverId}`
+}
+
+function parseServerSourceValue(value: string): number | null {
+  if (!value.startsWith(FILE_PANE_SERVER_SOURCE_PREFIX)) {
+    return null
+  }
+
+  const candidate = Number.parseInt(value.slice(FILE_PANE_SERVER_SOURCE_PREFIX.length), 10)
+  if (!Number.isFinite(candidate) || candidate <= 0) {
+    return null
+  }
+
+  return candidate
+}
+
+function resolveRemoteStartPath(server: ServerRecord): string {
+  const path = server.defaultDirectory?.trim() ?? ''
+  return path || '/'
+}
+
+function formatFilePaneServerLabel(server: ServerRecord): string {
+  return `${server.name} (${server.username}@${server.host})`
+}
+
+function resolveFilePaneSelectedSourceValue(session: TerminalSession | undefined, paneSessionId: string): string {
+  if (!isFilePaneSession(session) || resolveFilePaneSourceKind(session) !== 'ssh') {
+    return FILE_PANE_LOCAL_SOURCE_VALUE
+  }
+
+  const sourceSessionId = resolveFilePaneSourceSessionId(session) ?? paneSessionId
+  const boundServer = serverState.getSessionBoundServer(sourceSessionId)
+  if (!boundServer) {
+    return FILE_PANE_REMOTE_UNBOUND_SOURCE_VALUE
+  }
+
+  return toServerSourceValue(boundServer.id)
+}
+
+function isFilePaneSourceSwitching(sessionId: string): boolean {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) {
+    return false
+  }
+
+  return switchingFilePaneSessionId.value === normalizedSessionId || serverState.isSessionBusy(normalizedSessionId)
+}
+
+const filePaneServerOptions = computed<ServerRecord[]>(() => {
+  return [...serverState.servers.value].sort((left, right) => {
+    const byName = left.name.localeCompare(right.name)
+    if (byName !== 0) {
+      return byName
+    }
+    return left.host.localeCompare(right.host)
+  })
+})
+
+async function switchFilePaneSource(sessionId: string, sourceValue: string): Promise<void> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) {
+    return
+  }
+
+  if (sourceValue === FILE_PANE_LOCAL_SOURCE_VALUE) {
+    workspace.updateSession(normalizedSessionId, {
+      filePaneSourceKind: 'local',
+      filePaneSourceSessionId: null,
+      filePanePath: '/',
+      sshHost: null,
+    })
+    return
+  }
+
+  if (sourceValue === FILE_PANE_REMOTE_UNBOUND_SOURCE_VALUE || sourceValue === FILE_PANE_LOADING_SOURCE_VALUE) {
+    return
+  }
+
+  const serverId = parseServerSourceValue(sourceValue)
+  if (!serverId) {
+    return
+  }
+
+  const server = serverState.servers.value.find((item) => item.id === serverId)
+  if (!server) {
+    globalMessage.error(t('terminal.filePane.sourceServerMissing'), { replace: true })
+    return
+  }
+
+  if (switchingFilePaneSessionId.value === normalizedSessionId) {
+    return
+  }
+
+  switchingFilePaneSessionId.value = normalizedSessionId
+  try {
+    await serverState.connectSession(normalizedSessionId, server.id)
+    workspace.updateSession(normalizedSessionId, {
+      filePaneSourceKind: 'ssh',
+      filePaneSourceSessionId: normalizedSessionId,
+      filePanePath: resolveRemoteStartPath(server),
+      sshHost: server.host,
+    })
+  } catch (error) {
+    globalMessage.error(
+      t('terminal.filePane.sourceSwitchFailed', {
+        detail: formatErrorMessage(error, t('terminal.filePane.sourceSwitchFailedFallback')),
+      }),
+      { replace: true },
+    )
+  } finally {
+    if (switchingFilePaneSessionId.value === normalizedSessionId) {
+      switchingFilePaneSessionId.value = null
+    }
+  }
+}
+
+async function handleFilePaneSourceChange(sessionId: string, event: Event): Promise<void> {
+  const target = event.target as HTMLSelectElement | null
+  if (!target) {
+    return
+  }
+
+  await switchFilePaneSource(sessionId, target.value)
+  const session = props.sessionMap[sessionId]
+  target.value = resolveFilePaneSelectedSourceValue(session, sessionId)
 }
 
 function handleFilePanePathChange(sessionId: string, path: string): void {
@@ -186,6 +348,25 @@ const selfHostedSession = computed<TerminalSession | undefined>(() => {
 
   return props.sessionMap[leaf.sessionId]
 })
+
+watch(
+  () => isFilePaneSession(selfHostedSession.value),
+  (isFilePane) => {
+    if (!isFilePane) {
+      return
+    }
+
+    void serverState.ensureLoaded().catch((error) => {
+      globalMessage.error(
+        t('terminal.filePane.sourceLoadFailed', {
+          detail: formatErrorMessage(error, t('terminal.filePane.sourceLoadFailedFallback')),
+        }),
+        { replace: true },
+      )
+    })
+  },
+  { immediate: true },
+)
 
 function resolveBranchSplitRatio(node: SplitLayoutNode): number {
   if (node.type !== 'branch') {
@@ -336,11 +517,53 @@ onBeforeUnmount(() => {
             <span v-if="isLeafFocused(selfHostedLeafNode)" class="pane-active-dot" />
             {{ resolvePaneLabel(selfHostedSession) }}
           </span>
+          <div
+            v-if="isFilePaneSession(selfHostedSession)"
+            class="pane-source-switcher"
+            @pointerdown.stop
+            @click.stop
+          >
+            <select
+              class="pane-source-select"
+              :aria-label="t('terminal.filePane.sourceSelectAria')"
+              :value="resolveFilePaneSelectedSourceValue(selfHostedSession, selfHostedLeafNode.sessionId)"
+              :disabled="isFilePaneSourceSwitching(selfHostedLeafNode.sessionId)"
+              @change="handleFilePaneSourceChange(selfHostedLeafNode.sessionId, $event)"
+            >
+              <option :value="FILE_PANE_LOCAL_SOURCE_VALUE">
+                {{ t('terminal.filePane.sourceLocal') }}
+              </option>
+              <option
+                v-if="serverState.loading.value"
+                :value="FILE_PANE_LOADING_SOURCE_VALUE"
+                disabled
+              >
+                {{ t('terminal.filePane.sourceLoadingServers') }}
+              </option>
+              <option
+                v-if="
+                  resolveFilePaneSelectedSourceValue(selfHostedSession, selfHostedLeafNode.sessionId) ===
+                  FILE_PANE_REMOTE_UNBOUND_SOURCE_VALUE
+                "
+                :value="FILE_PANE_REMOTE_UNBOUND_SOURCE_VALUE"
+                disabled
+              >
+                {{ t('terminal.filePane.sourceUnknownRemote') }}
+              </option>
+              <option
+                v-for="server in filePaneServerOptions"
+                :key="server.id"
+                :value="toServerSourceValue(server.id)"
+              >
+                {{ formatFilePaneServerLabel(server) }}
+              </option>
+            </select>
+          </div>
           <button
             type="button"
             class="pane-close-btn"
-            aria-label="关闭当前终端"
-            title="关闭 (Command+W)"
+            :aria-label="t('terminal.pane.closeAria')"
+            :title="t('terminal.pane.closeTitle')"
             @click.stop="requestCloseFocused"
           >
             ×
@@ -369,7 +592,7 @@ onBeforeUnmount(() => {
             :initial-path="resolveFilePanePath(selfHostedSession)"
             @path-change="handleFilePanePathChange(selfHostedLeafNode.sessionId, $event)"
           />
-          <div v-else class="pane-empty">Pane session is unavailable.</div>
+          <div v-else class="pane-empty">{{ t('terminal.pane.emptyUnavailable') }}</div>
         </div>
       </article>
     </div>
@@ -378,7 +601,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="split-divider"
-        :aria-label="props.node.direction === 'vertical' ? '拖动调整高度' : '拖动调整宽度'"
+        :aria-label="props.node.direction === 'vertical' ? t('terminal.pane.resizeHeightAria') : t('terminal.pane.resizeWidthAria')"
         @pointerdown="startResizeDrag"
       />
 
@@ -421,7 +644,11 @@ onBeforeUnmount(() => {
     <button
       type="button"
       class="split-divider"
-      :aria-label="delegatedBranchNode.direction === 'vertical' ? '拖动调整高度' : '拖动调整宽度'"
+      :aria-label="
+        delegatedBranchNode.direction === 'vertical'
+          ? t('terminal.pane.resizeHeightAria')
+          : t('terminal.pane.resizeWidthAria')
+      "
       @pointerdown="startResizeDrag"
     />
 
@@ -524,8 +751,8 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex: 1 1 auto;
   min-width: 0;
-  max-width: calc(100% - 24px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -544,8 +771,31 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 
+.pane-source-switcher {
+  flex: 0 0 auto;
+  width: min(36vw, 240px);
+  margin-left: 8px;
+}
+
+.pane-source-select {
+  width: 100%;
+  height: 22px;
+  border-radius: 5px;
+  border: 1px solid #334155;
+  background: #0f1b2e;
+  color: #dbe5f5;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 8px;
+}
+
+.pane-source-select:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .pane-close-btn {
-  margin-left: auto;
+  margin-left: 8px;
   width: 18px;
   height: 18px;
   border: 0;
@@ -573,6 +823,11 @@ onBeforeUnmount(() => {
 }
 
 .pane.focused .pane-label {
+  color: #eef3ff;
+}
+
+.pane.focused .pane-source-select {
+  border-color: #475569;
   color: #eef3ff;
 }
 

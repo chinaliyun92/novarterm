@@ -1,6 +1,8 @@
 import { computed, reactive, ref, toValue, watch } from 'vue'
 import type { MaybeRefOrGetter } from 'vue'
-import type { SSHErrorCode, SSHResult } from '../../../shared/types/ssh'
+import type { SftpExtractZipResponse, SSHErrorCode, SSHResult } from '../../../shared/types/ssh'
+import { useI18n } from './useI18n'
+import { useSftpDownloadCenter } from './useSftpDownloadCenter'
 import type {
   RemoteBreadcrumbItem,
   RemoteDirectoryNode,
@@ -8,6 +10,7 @@ import type {
   RemoteFileEntry,
   RemoteUploadItem,
   RemoteUploadProgress,
+  SftpWithExtractZipApi,
   SftpWithWriteTextApi,
   UseRemoteFileBrowserStateOptions,
 } from '../types/file-browser'
@@ -40,6 +43,12 @@ interface TreeLoadOptions {
 
 const SFTP_LIST_READY_RETRY_DELAY_MS = 240
 const SFTP_LIST_READY_RETRY_ATTEMPTS = 12
+const i18n = useI18n()
+
+function t(key: string, params?: Record<string, string | number>): string {
+  return i18n.t(key, params)
+}
+const downloadCenter = useSftpDownloadCenter()
 
 interface SSHResultError extends Error {
   sshCode?: SSHErrorCode
@@ -51,7 +60,9 @@ function unwrapSSHResult<T>(result: SSHResult<T>, fallback: string): T {
     return result.data
   }
 
-  const message = result.error?.message?.trim() || fallback
+  const baseMessage = result.error?.message?.trim() || fallback
+  const detail = result.error?.detail?.trim()
+  const message = detail ? `${baseMessage}: ${detail}` : baseMessage
   const error = new Error(message) as SSHResultError
   if (result.error?.code) {
     error.sshCode = result.error.code
@@ -74,7 +85,7 @@ function normalizeSessionId(input: string | null | undefined): string | null {
 function resolveSessionId(input: string | null | undefined): string {
   const sessionId = normalizeSessionId(input)
   if (!sessionId) {
-    throw new Error('缺少 sessionId，无法执行远程文件操作。')
+    throw new Error(t('file.remoteState.error.sessionIdRequired'))
   }
 
   return sessionId
@@ -231,7 +242,7 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
       })
 
       try {
-        return sortRemoteEntries(unwrapSSHResult(result, '加载远程目录失败'))
+        return sortRemoteEntries(unwrapSSHResult(result, t('file.remoteState.error.loadRemoteDirectoryFailed')))
       } catch (reason) {
         if (!isSftpSessionNotReadyError(reason) || attempt >= SFTP_LIST_READY_RETRY_ATTEMPTS) {
           throw reason
@@ -261,7 +272,7 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
     } catch (reason) {
       node.loading = false
       node.loaded = false
-      node.error = toErrorMessage(reason, '目录树加载失败')
+      node.error = toErrorMessage(reason, t('file.remoteState.error.loadDirectoryTreeFailed'))
       throw reason
     }
   }
@@ -302,14 +313,14 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
     } catch (reason) {
       node.loading = false
       node.loaded = false
-      node.error = toErrorMessage(reason, '目录加载失败')
+      node.error = toErrorMessage(reason, t('file.remoteState.error.loadDirectoryFailed'))
 
       if (token !== activeLoadToken.value) {
         return
       }
 
       if (options.updateCurrent) {
-        error.value = toErrorMessage(reason, '目录加载失败')
+        error.value = toErrorMessage(reason, t('file.remoteState.error.loadDirectoryFailed'))
       }
       throw reason
     } finally {
@@ -364,17 +375,17 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
     await navigateTo(normalized)
   }
 
-  async function runSftpMutation(
-    operation: (sessionId: string) => Promise<void>,
+  async function runSftpMutation<T>(
+    operation: (sessionId: string) => Promise<T>,
     fallbackMessage: string,
-  ): Promise<void> {
+  ): Promise<T> {
     const sessionId = resolveSessionId(toValue(params.sessionId))
 
     operating.value = true
     error.value = null
 
     try {
-      await operation(sessionId)
+      return await operation(sessionId)
     } catch (reason) {
       error.value = toErrorMessage(reason, fallbackMessage)
       throw reason
@@ -388,7 +399,7 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
     await runSftpMutation(async (sessionId) => {
       const sftpApi = window.electronAPI.ssh.sftp as typeof window.electronAPI.ssh.sftp & SftpWithWriteTextApi
       if (typeof sftpApi.writeText !== 'function') {
-        throw new Error('当前环境不支持 ssh.sftp.writeText。')
+        throw new Error(t('file.remoteState.error.writeTextApiUnavailable'))
       }
 
       const result = await sftpApi.writeText({
@@ -397,8 +408,8 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
         content,
       })
 
-      unwrapSSHResult(result, '新建文件失败')
-    }, '新建文件失败')
+      unwrapSSHResult(result, t('file.remoteState.error.createFileFailed'))
+    }, t('file.remoteState.error.createFileFailed'))
 
     await refresh()
     return remotePath
@@ -414,8 +425,8 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
         recursive: false,
       })
 
-      unwrapSSHResult(result, '新建文件夹失败')
-    }, '新建文件夹失败')
+      unwrapSSHResult(result, t('file.remoteState.error.createDirectoryFailed'))
+    }, t('file.remoteState.error.createDirectoryFailed'))
 
     await refresh()
     return remotePath
@@ -432,8 +443,8 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
         isDirectory,
       })
 
-      unwrapSSHResult(result, '删除失败')
-    }, '删除失败')
+      unwrapSSHResult(result, t('file.remoteState.error.deleteFailed'))
+    }, t('file.remoteState.error.deleteFailed'))
 
     await refresh()
   }
@@ -453,8 +464,8 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
         toPath: targetPath,
       })
 
-      unwrapSSHResult(result, '重命名失败')
-    }, '重命名失败')
+      unwrapSSHResult(result, t('file.remoteState.error.renameFailed'))
+    }, t('file.remoteState.error.renameFailed'))
 
     await refresh()
     return targetPath
@@ -464,6 +475,12 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
     if (!items.length) {
       return
     }
+
+    const uploadDirectories = [...new Set(
+      items
+        .map((item) => getRemoteParentPath(item.remotePath))
+        .filter((path): path is string => Boolean(path && path !== ROOT_REMOTE_PATH)),
+    )].sort((left, right) => getRemotePathDepth(left) - getRemotePathDepth(right))
 
     uploadProgress.value = {
       active: true,
@@ -475,23 +492,132 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
 
     try {
       await runSftpMutation(async (sessionId) => {
+        const existingEntryCache = new Map<string, Map<string, RemoteFileEntry>>()
+
+        const getCachedEntryMap = async (directoryPath: string): Promise<Map<string, RemoteFileEntry>> => {
+          const cached = existingEntryCache.get(directoryPath)
+          if (cached) {
+            return cached
+          }
+
+          const rows = await listRemote(directoryPath)
+          const nextMap = new Map(rows.map((row) => [row.name, row]))
+          existingEntryCache.set(directoryPath, nextMap)
+          return nextMap
+        }
+
+        const removeCachedEntry = (remotePath: string): void => {
+          const parentPath = getRemoteParentPath(remotePath) ?? ROOT_REMOTE_PATH
+          const name = getRemoteBasename(remotePath)
+          if (!name) {
+            return
+          }
+          existingEntryCache.get(parentPath)?.delete(name)
+        }
+
+        const setCachedFileEntry = (remotePath: string): void => {
+          const parentPath = getRemoteParentPath(remotePath) ?? ROOT_REMOTE_PATH
+          const name = getRemoteBasename(remotePath)
+          if (!name) {
+            return
+          }
+
+          const cache = existingEntryCache.get(parentPath)
+          if (!cache) {
+            return
+          }
+
+          cache.set(name, {
+            name,
+            path: remotePath,
+            type: 'file',
+            size: 0,
+            modifyTime: 0,
+            accessTime: 0,
+          })
+        }
+
+        const ensureOverwriteReady = async (remotePath: string): Promise<void> => {
+          const parentPath = getRemoteParentPath(remotePath) ?? ROOT_REMOTE_PATH
+          const name = getRemoteBasename(remotePath)
+          if (!name) {
+            return
+          }
+
+          const cache = await getCachedEntryMap(parentPath)
+          const existing = cache.get(name)
+          if (!existing) {
+            return
+          }
+
+          if (existing.type === 'directory') {
+            throw new Error(
+              t('file.remote.error.uploadConflictDirectory', {
+                path: remotePath,
+              }),
+            )
+          }
+
+          const removeResult = await window.electronAPI.ssh.sftp.rm({
+            sessionId,
+            remotePath,
+            recursive: false,
+            isDirectory: false,
+          })
+          unwrapSSHResult(removeResult, t('file.remoteState.error.uploadFailed'))
+          removeCachedEntry(remotePath)
+        }
+
+        for (const directoryPath of uploadDirectories) {
+          const mkdirResult = await window.electronAPI.ssh.sftp.mkdir({
+            sessionId,
+            remotePath: directoryPath,
+            recursive: true,
+          })
+
+          unwrapSSHResult(mkdirResult, t('file.remoteState.error.uploadFailed'))
+        }
+
         for (let index = 0; index < items.length; index += 1) {
           const item = items[index]
           const completed = index + 1
+          let tracker:
+            | ReturnType<typeof downloadCenter.startInvokeUpload>
+            | null = null
 
           uploadProgress.value = {
             ...uploadProgress.value,
             currentFileName: getRemoteBasename(item.remotePath),
           }
 
-          const result = await window.electronAPI.ssh.sftp.put({
-            sessionId,
-            localPath: item.localPath,
-            remotePath: item.remotePath,
-          })
-
           try {
-            unwrapSSHResult(result, '上传失败')
+            tracker = downloadCenter.startInvokeUpload({
+              sessionId,
+              remotePath: item.remotePath,
+              localPath: item.localPath,
+            })
+
+            await ensureOverwriteReady(item.remotePath)
+
+            const result = await window.electronAPI.ssh.sftp.put({
+              sessionId,
+              localPath: item.localPath,
+              remotePath: item.remotePath,
+            })
+
+            unwrapSSHResult(result, t('file.remoteState.error.uploadFailed'))
+            setCachedFileEntry(item.remotePath)
+            if (tracker) {
+              downloadCenter.completeInvokeUpload(tracker)
+            }
+          } catch (reason) {
+            if (tracker) {
+              downloadCenter.failInvokeUpload(
+                tracker,
+                reason instanceof Error ? reason.message : String(reason),
+              )
+            }
+            throw reason
           } finally {
             uploadProgress.value = {
               ...uploadProgress.value,
@@ -500,7 +626,7 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
             }
           }
         }
-      }, '上传失败')
+      }, t('file.remoteState.error.uploadFailed'))
 
       await refresh()
     } finally {
@@ -513,15 +639,61 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
   }
 
   async function downloadFile(entry: RemoteFileEntry, localPath: string): Promise<void> {
-    await runSftpMutation(async (sessionId) => {
-      const result = await window.electronAPI.ssh.sftp.get({
-        sessionId,
-        remotePath: entry.path,
-        localPath,
-      })
+    let tracker:
+      | ReturnType<typeof downloadCenter.startInvokeDownload>
+      | null = null
+    try {
+      await runSftpMutation(async (sessionId) => {
+        tracker = downloadCenter.startInvokeDownload({
+          sessionId,
+          remotePath: entry.path,
+          localPath,
+        })
 
-      unwrapSSHResult(result, '下载失败')
-    }, '下载失败')
+        const result = await window.electronAPI.ssh.sftp.get({
+          sessionId,
+          remotePath: entry.path,
+          localPath,
+        })
+
+        unwrapSSHResult(result, t('file.remoteState.error.downloadFailed'))
+      }, t('file.remoteState.error.downloadFailed'))
+
+      if (tracker) {
+        downloadCenter.completeInvokeDownload(tracker)
+      }
+    } catch (reason) {
+      if (tracker) {
+        downloadCenter.failInvokeDownload(
+          tracker,
+          reason instanceof Error ? reason.message : String(reason),
+        )
+      }
+      throw reason
+    }
+  }
+
+  async function extractZip(
+    entry: RemoteFileEntry,
+    targetDirectoryPath?: string,
+  ): Promise<SftpExtractZipResponse> {
+    const resolvedTargetPath = (targetDirectoryPath ?? '').trim() || undefined
+
+    return await runSftpMutation(async (sessionId) => {
+      const sftpApi = window.electronAPI.ssh.sftp as typeof window.electronAPI.ssh.sftp & SftpWithExtractZipApi
+      if (typeof sftpApi.extractZip !== 'function') {
+        throw new Error(t('file.remoteState.error.extractZipApiUnavailable'))
+      }
+
+      const result = await sftpApi.extractZip({
+        sessionId,
+        remoteZipPath: entry.path,
+        targetDirectoryPath: resolvedTargetPath,
+      })
+      const response = unwrapSSHResult(result, t('file.remoteState.error.extractZipFailed'))
+      await refresh()
+      return response
+    }, t('file.remoteState.error.extractZipFailed'))
   }
 
   function clearState(): void {
@@ -633,6 +805,7 @@ export function useRemoteFileBrowserState(params: UseRemoteFileBrowserStateParam
     renameEntry,
     uploadFiles,
     downloadFile,
+    extractZip,
     toggleTreeNode,
     selectTreeNode,
   }

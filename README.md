@@ -1,23 +1,39 @@
 # NovarTerm
 
-NovarTerm is a desktop terminal built for modern DevOps workflows, with instant local/remote switching, a unified file browser, remote file transfer, flexible tab+pane layouts, and trigger automation.
+AI-first terminal workspace for developers and DevOps teams.
 
-## Advantages
+NovarTerm is an AI-native desktop terminal that keeps AI help in the same place where you run commands, inspect logs, transfer files, and manage remote sessions.
 
-1. Instant Local and Remote Switching  
-Move between local shell and remote SSH sessions at any time without losing momentum.
+## Feature Highlights
 
-2. Unified Visual File Browser for Local + Remote  
-Browse, navigate, and manage local and remote directories in one consistent file pane.
+1. AI Command Bar at the Center  
+Use streaming chat, explain, run, and insert actions directly in terminal workflow, with built-in proxy and custom model routing.
 
-3. Remote File Transfer with Drag-and-Drop Upload  
-Upload and download files on remote servers, and drag files directly from desktop for quick upload.
+2. Debug with Novar  
+When terminal output matches common error patterns, launch structured AI debugging with User/Output/Command context cards.
 
-4. Multi-Tab + Multi-Pane Workspace  
-Run parallel tasks cleanly with tabs and split panes, with up to six panes in one tab.
+3. Multi-Tab + Multi-Pane Workspace  
+Create, close, reorder, and split sessions freely, then restore your full workspace after app restart.
 
-5. Custom Trigger Automation  
-Define output-based triggers to auto-send predefined actions for repetitive terminal interactions.
+4. Fast Remote Session Workflow  
+Connect to saved SSH servers from the terminal context menu, or use manual `ssh` commands when needed.
+
+5. Unified Local + Remote File Pane  
+Switch one file pane between local and remote sources, with file operations, upload, and download in a consistent UI.
+
+6. Drag-and-Drop Rules That Stay Predictable  
+Dragging into shell inserts paths only; dragging into a remote file pane starts confirmed uploads (including directory uploads).
+
+7. Centralized Transfer Center  
+Track upload and download progress/history from one entry in the tab bar.
+
+8. Trigger Automation + i18n  
+Use pattern-based triggers (optional auto-send), with core UX available in both Chinese and English.
+
+## Documentation
+
+- User-facing feature overview: [docs/app-features-overview.md](docs/app-features-overview.md)
+- Engineering capability matrix: [docs/app-technical-capability-matrix.md](docs/app-technical-capability-matrix.md)
 
 ## Screenshots
 

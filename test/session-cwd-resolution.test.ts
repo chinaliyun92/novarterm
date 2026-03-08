@@ -55,7 +55,7 @@ test('extract cwd hint from cd command for ssh prompt fallback', () => {
   assert.equal(resolveSessionCwdHintFromCommand('cd ~/workspace'), '~/workspace')
   assert.equal(resolveSessionCwdHintFromCommand('cd /tmp;'), '/tmp')
   assert.equal(resolveSessionCwdHintFromCommand('pwd'), null)
-  assert.equal(resolveSessionCwdHintFromCommand('cd foo/bar'), null)
+  assert.equal(resolveSessionCwdHintFromCommand('cd foo/bar'), '~/foo/bar')
   assert.equal(resolveSessionCwdHintFromCommand('cd /tmp; ls'), null)
   assert.equal(resolveSessionCwdHintFromCommand('cd /tmp && ls'), null)
 })

@@ -32,6 +32,11 @@ export interface LocalFileDeleteRequest {
   path: string
 }
 
+export interface LocalFileImportRequest {
+  targetDirectoryPath: string
+  sourcePaths: string[]
+}
+
 export interface LocalFileListData {
   path: string
   parentPath: string | null
@@ -40,6 +45,11 @@ export interface LocalFileListData {
 
 export interface LocalFileActionData {
   path: string
+}
+
+export interface LocalFileImportData {
+  targetDirectoryPath: string
+  importedCount: number
 }
 
 export interface LocalFileErrorPayload {

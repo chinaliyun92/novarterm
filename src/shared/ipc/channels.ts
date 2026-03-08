@@ -11,9 +11,17 @@ export const SSH_IPC_CHANNELS = {
   sftpMkdir: "ssh:sftp:mkdir",
   sftpRm: "ssh:sftp:rm",
   sftpRename: "ssh:sftp:rename",
+  sftpExtractZip: "ssh:sftp:extractZip",
 } as const;
 
 export type SSHIPCChannel = (typeof SSH_IPC_CHANNELS)[keyof typeof SSH_IPC_CHANNELS];
+
+export const SSH_IPC_EVENTS = {
+  sftpDownloadProgress: "ssh:sftp:download:progress",
+  sftpUploadProgress: "ssh:sftp:upload:progress",
+} as const;
+
+export type SSHIPCEventChannel = (typeof SSH_IPC_EVENTS)[keyof typeof SSH_IPC_EVENTS];
 
 export const TERMINAL_IPC_CHANNELS = {
   open: "terminal:open",
@@ -46,7 +54,6 @@ export const SERVER_IPC_CHANNELS = {
   serverUpdate: "server:update",
   serverDelete: "server:delete",
   serverSearch: "server:search",
-  serverToggleFavorite: "server:favorite:toggle",
   connect: "server:ssh:connect",
   reconnect: "server:ssh:reconnect",
   disconnect: "server:ssh:disconnect",
@@ -59,6 +66,7 @@ export type ServerIPCChannel = (typeof SERVER_IPC_CHANNELS)[keyof typeof SERVER_
 export const SETTINGS_IPC_CHANNELS = {
   get: 'settings:get',
   set: 'settings:set',
+  cleanCommandBarHistory: 'settings:cleanCommandBarHistory',
 } as const;
 
 export type SettingsIPCChannel =
@@ -75,6 +83,7 @@ export type UpdateIPCChannel =
 
 export const SHELL_IPC_CHANNELS = {
   openExternal: 'shell:openExternal',
+  openPath: 'shell:openPath',
 } as const;
 
 export type ShellIPCChannel =
@@ -100,6 +109,7 @@ export const LOCAL_FILE_IPC_CHANNELS = {
   createDirectory: 'local-file:createDirectory',
   rename: 'local-file:rename',
   delete: 'local-file:delete',
+  importPaths: 'local-file:importPaths',
 } as const;
 
 export type LocalFileIPCChannel =

@@ -8,7 +8,6 @@ import type {
   ServerResult,
   ServerDirectoryRecordRequest,
   ServerSessionRequest,
-  ToggleServerFavoriteRequest,
   UpdateServerRequest,
 } from '../../shared/types/server';
 import type { RepositoryRegistry } from '../repositories';
@@ -75,12 +74,6 @@ export function registerServerIPCHandlers(
       toResult(async () => ({
         servers: service.searchServers(request),
       })),
-  );
-
-  ipcMain.handle(
-    SERVER_IPC_CHANNELS.serverToggleFavorite,
-    async (_event: IpcMainInvokeEvent, request: ToggleServerFavoriteRequest) =>
-      toResult(async () => service.toggleFavorite(request)),
   );
 
   ipcMain.handle(

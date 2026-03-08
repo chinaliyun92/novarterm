@@ -3,7 +3,6 @@ import Database from 'better-sqlite3';
 import type { CreateServerInput, Server, UpdateServerInput } from '../../shared/types/db';
 import { BaseRepository } from './base-repository';
 import {
-  toBooleanFromInt,
   toNullableString,
   toNumber,
   toStringValue,
@@ -16,7 +15,7 @@ export class ServerRepository extends BaseRepository<
 > {
   constructor(db: Database.Database) {
     super(db, 'servers', {
-      defaultOrderBy: 'is_favorite DESC, updated_at DESC, id DESC',
+      defaultOrderBy: 'updated_at DESC, id DESC',
       timestamps: {
         createdAtColumn: 'created_at',
         updatedAtColumn: 'updated_at',
@@ -37,7 +36,6 @@ export class ServerRepository extends BaseRepository<
       privateKeyPath: toNullableString(row.private_key_path),
       passphrase: toNullableString(row.passphrase),
       defaultDirectory: toNullableString(row.default_directory),
-      isFavorite: toBooleanFromInt(row.is_favorite),
       lastConnectedAt: toNullableString(row.last_connected_at),
       createdAt: toStringValue(row.created_at),
       updatedAt: toStringValue(row.updated_at),
@@ -76,9 +74,6 @@ export class ServerRepository extends BaseRepository<
     }
     if (input.defaultDirectory !== undefined) {
       row.default_directory = input.defaultDirectory;
-    }
-    if (input.isFavorite !== undefined) {
-      row.is_favorite = input.isFavorite ? 1 : 0;
     }
     if (input.lastConnectedAt !== undefined) {
       row.last_connected_at = input.lastConnectedAt;

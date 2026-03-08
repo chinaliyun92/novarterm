@@ -251,11 +251,12 @@ function normalizeSession(value: TerminalSession, fallbackTabId: string): Termin
 
 function filterRestorableSessions(sessions: TerminalSession[]): TerminalSession[] {
   return sessions.filter((session) => {
-    if (session.kind === 'file' && session.filePaneSourceKind === 'ssh') {
+    // File panes are intentionally ephemeral and should not be restored after app restart.
+    if (session.kind === 'file') {
       return false
     }
 
-    if (session.kind !== 'file' && session.sshHost?.trim()) {
+    if (session.sshHost?.trim()) {
       return false
     }
 

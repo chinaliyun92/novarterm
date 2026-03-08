@@ -36,3 +36,11 @@ export interface SettingsSetRequest {
 export interface SettingsSetResponse {
   setting: Setting;
 }
+
+export interface SettingsCleanCommandBarHistoryRequest {
+  keepSessionIds: string[];
+}
+
+export interface SettingsCleanCommandBarHistoryResponse {
+  removedCount: number;
+}

@@ -9,6 +9,7 @@ import {
   SERVER_IPC_CHANNELS,
   SHELL_IPC_CHANNELS,
   SSH_IPC_CHANNELS,
+  SSH_IPC_EVENTS,
   TERMINAL_IPC_CHANNELS,
   TERMINAL_IPC_EVENTS,
   UPDATE_IPC_CHANNELS,
@@ -23,6 +24,8 @@ import type {
   LocalFileCreateDirectoryRequest,
   LocalFileCreateFileRequest,
   LocalFileDeleteRequest,
+  LocalFileImportData,
+  LocalFileImportRequest,
   LocalFileListData,
   LocalFileListRequest,
   LocalFileRenameRequest,
@@ -43,6 +46,8 @@ import type {
   ServersListData
 } from '../shared/types/server'
 import type {
+  SftpExtractZipRequest,
+  SftpExtractZipResponse,
   SftpGetRequest,
   SftpListItem,
   SftpListRequest,
@@ -55,10 +60,14 @@ import type {
   SftpWriteTextRequest,
   SSHConnectRequest,
   SSHConnectionSnapshot,
+  SftpDownloadProgressEvent,
+  SftpUploadProgressEvent,
   SSHResult,
   SSHSessionRequest
 } from '../shared/types/ssh'
 import type {
+  SettingsCleanCommandBarHistoryRequest,
+  SettingsCleanCommandBarHistoryResponse,
   SettingsGetResponse,
   SettingsResult,
   SettingsSetResponse,
@@ -135,11 +144,6 @@ const api = {
       }),
     delete: (serverId: number) =>
       invoke<ServerResult<DeleteResult>>(SERVER_IPC_CHANNELS.serverDelete, { serverId }),
-    favorite: (serverId: number, isFavorite?: boolean) =>
-      invoke<ServerResult<ServersListData['servers'][number]>>(SERVER_IPC_CHANNELS.serverToggleFavorite, {
-        serverId,
-        isFavorite,
-      }),
     connect: (serverId: number, sessionId: string) =>
       invoke<ServerResult<ServerConnectData>>(SERVER_IPC_CHANNELS.connect, { serverId, sessionId }),
     reconnect: (serverId: number, sessionId: string) =>
@@ -161,6 +165,10 @@ const api = {
       invoke<SSHResult<SSHConnectionSnapshot>>(SSH_IPC_CHANNELS.reconnect, request),
     status: (request: SSHSessionRequest) =>
       invoke<SSHResult<SSHConnectionSnapshot>>(SSH_IPC_CHANNELS.status, request),
+    onSftpDownloadProgress: (listener: (event: SftpDownloadProgressEvent) => void) =>
+      subscribe<SftpDownloadProgressEvent>(SSH_IPC_EVENTS.sftpDownloadProgress, listener),
+    onSftpUploadProgress: (listener: (event: SftpUploadProgressEvent) => void) =>
+      subscribe<SftpUploadProgressEvent>(SSH_IPC_EVENTS.sftpUploadProgress, listener),
 
     sftp: {
       list: (request: SftpListRequest) =>
@@ -176,6 +184,8 @@ const api = {
       rm: (request: SftpRmRequest) => invoke<SSHResult<void>>(SSH_IPC_CHANNELS.sftpRm, request),
       rename: (request: SftpRenameRequest) =>
         invoke<SSHResult<void>>(SSH_IPC_CHANNELS.sftpRename, request),
+      extractZip: (request: SftpExtractZipRequest) =>
+        invoke<SSHResult<SftpExtractZipResponse>>(SSH_IPC_CHANNELS.sftpExtractZip, request),
     },
   },
 
@@ -187,6 +197,8 @@ const api = {
   shell: {
     openExternal: (url: string) =>
       invoke<{ ok: boolean; error?: string }>(SHELL_IPC_CHANNELS.openExternal, url),
+    openPath: (path: string) =>
+      invoke<{ ok: boolean; error?: string }>(SHELL_IPC_CHANNELS.openPath, path),
   },
 
   log: {
@@ -199,6 +211,11 @@ const api = {
       invoke<SettingsResult<SettingsGetResponse>>(SETTINGS_IPC_CHANNELS.get, { key }),
     set: (key: string, value: string) =>
       invoke<SettingsResult<SettingsSetResponse>>(SETTINGS_IPC_CHANNELS.set, { key, value }),
+    cleanCommandBarHistory: (request: SettingsCleanCommandBarHistoryRequest) =>
+      invoke<SettingsResult<SettingsCleanCommandBarHistoryResponse>>(
+        SETTINGS_IPC_CHANNELS.cleanCommandBarHistory,
+        request,
+      ),
   },
 
   update: {
@@ -223,6 +240,8 @@ const api = {
       invoke<LocalFileResult<LocalFileActionData>>(LOCAL_FILE_IPC_CHANNELS.rename, request),
     delete: (request: LocalFileDeleteRequest) =>
       invoke<LocalFileResult<LocalFileActionData>>(LOCAL_FILE_IPC_CHANNELS.delete, request),
+    importPaths: (request: LocalFileImportRequest) =>
+      invoke<LocalFileResult<LocalFileImportData>>(LOCAL_FILE_IPC_CHANNELS.importPaths, request),
   },
 
   terminal: {

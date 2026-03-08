@@ -1,11 +1,32 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useTerminalWorkspaceState } from '../../composables/useTerminalWorkspaceState'
 import CloseConfirmDialog from './CloseConfirmDialog.vue'
 import SessionTabs from './SessionTabs.vue'
 import SplitTerminalContainer from './SplitTerminalContainer.vue'
 
+const COMMAND_BAR_HISTORY_CLEANUP_DELAY_MS = 10_000
+
 const workspace = useTerminalWorkspaceState()
+
+let cleanupTimer: ReturnType<typeof setTimeout> | null = null
+onMounted(() => {
+  const api = (window as Window & { electronAPI?: { settings?: { cleanCommandBarHistory: (req: { keepSessionIds: string[] }) => Promise<{ ok: boolean }> } } }).electronAPI?.settings
+  if (!api?.cleanCommandBarHistory) {
+    return
+  }
+  cleanupTimer = setTimeout(() => {
+    cleanupTimer = null
+    const keepSessionIds = workspace.sessions.value.map((s) => s.id)
+    void api.cleanCommandBarHistory({ keepSessionIds }).catch(() => {})
+  }, COMMAND_BAR_HISTORY_CLEANUP_DELAY_MS)
+})
+onBeforeUnmount(() => {
+  if (cleanupTimer != null) {
+    clearTimeout(cleanupTimer)
+    cleanupTimer = null
+  }
+})
 
 const closeTarget = computed(() => {
   const tabId = workspace.closeConfirm.sessionId
@@ -69,7 +90,6 @@ function closeCurrentWorkspaceByAction(): void {
 <template>
   <section class="terminal-workspace">
     <SessionTabs
-      v-if="workspace.tabSessions.value.length > 1"
       :sessions="workspace.tabSessions.value"
       :active-session-id="workspace.activeTabSessionId.value"
       :can-create="workspace.canCreateMoreTabs.value"

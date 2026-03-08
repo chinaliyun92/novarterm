@@ -2,6 +2,8 @@ import type { IpcMain, IpcMainInvokeEvent } from 'electron';
 
 import { SETTINGS_IPC_CHANNELS } from '../../shared/ipc/channels';
 import type {
+  SettingsCleanCommandBarHistoryRequest,
+  SettingsCleanCommandBarHistoryResponse,
   SettingsErrorPayload,
   SettingsGetRequest,
   SettingsGetResponse,
@@ -70,6 +72,33 @@ export function registerSettingsIPCHandlers(
         return {
           setting: updated,
         } satisfies SettingsSetResponse;
+      }),
+  );
+
+  const COMMAND_BAR_HISTORY_KEY_PREFIX = 'ai.commandBar.history.';
+  ipcMain.handle(
+    SETTINGS_IPC_CHANNELS.cleanCommandBarHistory,
+    async (_event: IpcMainInvokeEvent, request: SettingsCleanCommandBarHistoryRequest) =>
+      toResult(async (): Promise<SettingsCleanCommandBarHistoryResponse> => {
+        const keepSet = new Set(
+          Array.isArray(request.keepSessionIds)
+            ? request.keepSessionIds.filter((id): id is string => typeof id === 'string')
+            : [],
+        );
+        const all = repositories.settings.findAll();
+        let removedCount = 0;
+        for (const row of all) {
+          if (row.key.startsWith(COMMAND_BAR_HISTORY_KEY_PREFIX)) {
+            const sessionId = row.key.slice(COMMAND_BAR_HISTORY_KEY_PREFIX.length);
+            if (!keepSet.has(sessionId)) {
+              const deleted = repositories.settings.delete(row.key);
+              if (deleted) {
+                removedCount += 1;
+              }
+            }
+          }
+        }
+        return { removedCount };
       }),
   );
 }

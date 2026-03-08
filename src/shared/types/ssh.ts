@@ -101,6 +101,37 @@ export interface SftpGetRequest {
   localPath: string;
 }
 
+export type SftpTransferState = "started" | "progress" | "completed" | "failed";
+export type SftpTransferDirection = "download" | "upload";
+
+export interface SftpTransferProgress {
+  transferredBytes: number;
+  totalBytes: number | null;
+  percent: number | null;
+}
+
+export type SftpDownloadProgress = SftpTransferProgress;
+
+export interface SftpDownloadProgressEvent extends SftpTransferProgress {
+  taskId: string;
+  sessionId: string;
+  remotePath: string;
+  localPath: string;
+  state: SftpTransferState;
+  error?: SSHErrorPayload;
+  at: string;
+}
+
+export interface SftpUploadProgressEvent extends SftpTransferProgress {
+  taskId: string;
+  sessionId: string;
+  remotePath: string;
+  localPath: string;
+  state: SftpTransferState;
+  error?: SSHErrorPayload;
+  at: string;
+}
+
 export interface SftpPutRequest {
   sessionId: string;
   localPath: string;
@@ -144,4 +175,15 @@ export interface SftpRenameRequest {
   sessionId: string;
   fromPath: string;
   toPath: string;
+}
+
+export interface SftpExtractZipRequest {
+  sessionId: string;
+  remoteZipPath: string;
+  targetDirectoryPath?: string;
+}
+
+export interface SftpExtractZipResponse {
+  remoteZipPath: string;
+  targetDirectoryPath: string;
 }

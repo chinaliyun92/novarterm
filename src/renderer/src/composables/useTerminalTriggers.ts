@@ -1,17 +1,23 @@
 import { ref } from 'vue'
 
+export type TerminalTriggerSource = 'user' | 'server_hidden'
+
 export interface TerminalTriggerRule {
   id: string
   pattern: string
   sendText: string
   enabled: boolean
+  autoSend: boolean
+  hidden?: boolean
+  source?: TerminalTriggerSource
+  sourceServerId?: number
   createdAt: number
   updatedAt: number
 }
 
 interface PersistedTerminalTriggersState {
   version: 1
-  rules: TerminalTriggerRule[]
+  rules: unknown[]
 }
 
 const STORAGE_KEY = 'iterm.terminal-triggers.v1'
@@ -31,17 +37,53 @@ function isValidRule(value: unknown): value is TerminalTriggerRule {
     return false
   }
 
+  const hidden = value.hidden
+  const source = value.source
+  const sourceServerId = value.sourceServerId
+
   return (
     typeof value.id === 'string' &&
     value.id.length > 0 &&
     typeof value.pattern === 'string' &&
     typeof value.sendText === 'string' &&
     typeof value.enabled === 'boolean' &&
+    (hidden === undefined || typeof hidden === 'boolean') &&
+    (source === undefined || source === 'user' || source === 'server_hidden') &&
+    (sourceServerId === undefined || (typeof sourceServerId === 'number' && Number.isFinite(sourceServerId))) &&
     typeof value.createdAt === 'number' &&
     Number.isFinite(value.createdAt) &&
     typeof value.updatedAt === 'number' &&
     Number.isFinite(value.updatedAt)
   )
+}
+
+function resolveDefaultAutoSend(source: TerminalTriggerSource | undefined): boolean {
+  return source === 'server_hidden'
+}
+
+function normalizeRule(value: unknown): TerminalTriggerRule | null {
+  if (!isValidRule(value)) {
+    return null
+  }
+
+  const record = value as unknown as Record<string, unknown>
+  const source = record.source as TerminalTriggerSource | undefined
+  const autoSend = typeof record.autoSend === 'boolean'
+    ? record.autoSend
+    : resolveDefaultAutoSend(source)
+
+  return {
+    id: value.id,
+    pattern: value.pattern,
+    sendText: value.sendText,
+    enabled: value.enabled,
+    autoSend,
+    hidden: value.hidden,
+    source,
+    sourceServerId: value.sourceServerId,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  }
 }
 
 function loadRulesFromLocalStorage(): TerminalTriggerRule[] {
@@ -60,7 +102,9 @@ function loadRulesFromLocalStorage(): TerminalTriggerRule[] {
       return []
     }
 
-    return parsed.rules.filter((rule) => isValidRule(rule))
+    return parsed.rules
+      .map((rule) => normalizeRule(rule))
+      .filter((rule): rule is TerminalTriggerRule => rule !== null)
   } catch {
     return []
   }
@@ -89,13 +133,22 @@ function createTerminalTriggersStore() {
     saveRulesToLocalStorage(rules.value)
   }
 
-  function addRule(input?: Partial<Pick<TerminalTriggerRule, 'pattern' | 'sendText' | 'enabled'>>): string {
+  function addRule(
+    input?: Partial<
+      Pick<TerminalTriggerRule, 'pattern' | 'sendText' | 'enabled' | 'autoSend' | 'hidden' | 'source' | 'sourceServerId'>
+    >,
+  ): string {
     const now = Date.now()
+    const source = input?.source ?? 'user'
     const rule: TerminalTriggerRule = {
       id: createRuleId(),
       pattern: input?.pattern ?? '',
       sendText: input?.sendText ?? '',
       enabled: input?.enabled ?? true,
+      autoSend: input?.autoSend ?? resolveDefaultAutoSend(source),
+      hidden: input?.hidden ?? false,
+      source,
+      sourceServerId: typeof input?.sourceServerId === 'number' ? input.sourceServerId : undefined,
       createdAt: now,
       updatedAt: now,
     }
@@ -106,7 +159,7 @@ function createTerminalTriggersStore() {
 
   function updateRule(
     id: string,
-    patch: Partial<Pick<TerminalTriggerRule, 'pattern' | 'sendText' | 'enabled'>>,
+    patch: Partial<Pick<TerminalTriggerRule, 'pattern' | 'sendText' | 'enabled' | 'autoSend' | 'hidden' | 'source' | 'sourceServerId'>>,
   ): boolean {
     const normalizedId = id.trim()
     if (!normalizedId) {
@@ -125,6 +178,10 @@ function createTerminalTriggersStore() {
         pattern: patch.pattern ?? rule.pattern,
         sendText: patch.sendText ?? rule.sendText,
         enabled: patch.enabled ?? rule.enabled,
+        autoSend: patch.autoSend ?? rule.autoSend,
+        hidden: patch.hidden ?? rule.hidden,
+        source: patch.source ?? rule.source,
+        sourceServerId: patch.sourceServerId ?? rule.sourceServerId,
         updatedAt: Date.now(),
       }
     })

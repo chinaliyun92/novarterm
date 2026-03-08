@@ -38,12 +38,6 @@ export interface UpdateServerRequest {
 
 export interface SearchServersRequest {
   keyword?: string;
-  isFavorite?: boolean;
-}
-
-export interface ToggleServerFavoriteRequest {
-  serverId: number;
-  isFavorite?: boolean;
 }
 
 export interface ServerSessionRequest {

@@ -7,6 +7,7 @@ import type {
   SftpWriteTextRequest,
   SSHResult,
 } from '../../../../shared/types/ssh'
+import { useI18n } from '../../composables/useI18n'
 import type { RemoteFileEntry } from '../../types/file-browser'
 import { normalizeRemotePath, toErrorMessage } from '../../types/file-browser'
 
@@ -31,6 +32,11 @@ interface SftpReadApi {
 }
 
 const props = defineProps<RemoteFileInspectorProps>()
+const i18n = useI18n()
+
+function t(key: string, params?: Record<string, string | number>): string {
+  return i18n.t(key, params)
+}
 
 const emit = defineEmits<{
   (event: 'dirty-change', dirty: boolean): void
@@ -157,16 +163,16 @@ const saveEncodingLabel = computed(() => {
   if (!isTextBased.value) {
     return null
   }
-  return `保存编码：${SAVE_ENCODING}`
+  return t('file.inspector.saveEncoding', { encoding: SAVE_ENCODING })
 })
 
 const fileLabel = computed(() => {
   if (!props.entry) {
-    return '未选中文件'
+    return t('file.inspector.label.noFileSelected')
   }
 
   if (props.entry.type !== 'file') {
-    return `${props.entry.name}（目录）`
+    return t('file.inspector.label.directorySelected', { name: props.entry.name })
   }
 
   return props.entry.path
@@ -445,7 +451,7 @@ async function loadSelectedFile(): Promise<void> {
     previewKind.value = nextKind
 
     if (nextKind === 'binary') {
-      capabilityHint.value = '该文件疑似二进制文件，暂不支持预览。'
+      capabilityHint.value = t('file.inspector.hint.binaryPreviewUnsupported')
       loadedPath.value = entry.path
       return
     }
@@ -453,7 +459,7 @@ async function loadSelectedFile(): Promise<void> {
     const sftpApi = getSftpApi()
     if (typeof sftpApi.readFile !== 'function') {
       capabilityHint.value =
-        '当前环境未暴露 ssh.sftp.readFile，无法读取远程文件内容。请补充 preload 暴露后重试。'
+        t('file.inspector.hint.readFileApiUnavailable')
       return
     }
 
@@ -464,7 +470,7 @@ async function loadSelectedFile(): Promise<void> {
       mode,
     })
 
-    const response = unwrapSSHResult(result, '读取远程文件失败')
+    const response = unwrapSSHResult(result, t('file.inspector.error.readFileFailed'))
     if (token !== activeLoadToken) {
       return
     }
@@ -494,7 +500,11 @@ async function loadSelectedFile(): Promise<void> {
 
       if (contentTruncated.value) {
         notices.push(
-          `大文件保护：文件大小 ${formatFileSize(entry.size)}，日志仅显示尾部 ${LARGE_LOG_TAIL_LINE_LIMIT} 行（最多 ${LARGE_LOG_TAIL_CHAR_LIMIT.toLocaleString()} 个字符）。`,
+          t('file.inspector.notice.largeLogTail', {
+            size: formatFileSize(entry.size),
+            lineLimit: LARGE_LOG_TAIL_LINE_LIMIT,
+            charLimit: LARGE_LOG_TAIL_CHAR_LIMIT.toLocaleString(),
+          }),
         )
       }
     } else if (isLargeTextFile) {
@@ -503,7 +513,10 @@ async function loadSelectedFile(): Promise<void> {
       contentTruncated.value = head.truncated
       if (head.truncated) {
         notices.push(
-          `大文件保护：文件大小 ${formatFileSize(entry.size)}，当前仅预览前 ${LARGE_TEXT_PREVIEW_CHAR_LIMIT.toLocaleString()} 个字符。`,
+          t('file.inspector.notice.largeTextHead', {
+            size: formatFileSize(entry.size),
+            charLimit: LARGE_TEXT_PREVIEW_CHAR_LIMIT.toLocaleString(),
+          }),
         )
       }
     } else {
@@ -524,7 +537,7 @@ async function loadSelectedFile(): Promise<void> {
         } catch (reason) {
           previewText.value = text
           editorText.value = text
-          jsonParseError.value = toErrorMessage(reason, 'JSON 解析失败')
+          jsonParseError.value = toErrorMessage(reason, t('file.inspector.error.jsonParseFailed'))
         }
       }
     } else {
@@ -545,7 +558,7 @@ async function loadSelectedFile(): Promise<void> {
       return
     }
 
-    const message = toErrorMessage(reason, '读取远程文件失败')
+    const message = toErrorMessage(reason, t('file.inspector.error.readFileFailed'))
     loadError.value = message
     emit('error', message)
   } finally {
@@ -574,12 +587,12 @@ function suggestSaveAsPath(path: string): string {
 async function writeText(remotePath: string, content: string): Promise<void> {
   const sessionId = sessionIdValue.value
   if (!sessionId) {
-    throw new Error('缺少活动 session，无法保存文件。')
+    throw new Error(t('file.inspector.error.sessionUnavailableForSave'))
   }
 
   const sftpApi = getSftpApi()
   if (typeof sftpApi.writeText !== 'function') {
-    throw new Error('当前环境不支持 ssh.sftp.writeText。')
+    throw new Error(t('file.inspector.error.writeTextApiUnavailable'))
   }
 
   const result = await sftpApi.writeText({
@@ -588,12 +601,12 @@ async function writeText(remotePath: string, content: string): Promise<void> {
     content,
   })
 
-  unwrapSSHResult(result, '保存文件失败')
+  unwrapSSHResult(result, t('file.inspector.error.saveFailed'))
 }
 
 async function handleReload(): Promise<void> {
   if (isDirty.value) {
-    const confirmed = window.confirm('当前文件有未保存修改，确认重新加载并丢弃修改吗？')
+    const confirmed = window.confirm(t('file.inspector.confirm.reloadDiscardChanges'))
     if (!confirmed) {
       return
     }
@@ -614,7 +627,7 @@ async function handleSave(): Promise<void> {
     return
   }
 
-  if (!confirmEncodingWriteback('保存')) {
+  if (!confirmEncodingWriteback(t('file.inspector.action.save'))) {
     return
   }
 
@@ -624,10 +637,10 @@ async function handleSave(): Promise<void> {
   try {
     await writeText(loadedPath.value, editorText.value)
     persistedText.value = editorText.value
-    actionMessage.value = `已保存：${loadedPath.value}`
+    actionMessage.value = t('file.inspector.message.saved', { path: loadedPath.value })
     emit('saved', loadedPath.value)
   } catch (reason) {
-    const message = toErrorMessage(reason, '保存失败')
+    const message = toErrorMessage(reason, t('file.inspector.error.saveFailed'))
     loadError.value = message
     emit('error', message)
   } finally {
@@ -640,7 +653,7 @@ async function handleSaveAs(): Promise<void> {
     return
   }
 
-  if (!confirmEncodingWriteback('另存为')) {
+  if (!confirmEncodingWriteback(t('file.inspector.action.saveAs'))) {
     return
   }
 
@@ -649,14 +662,14 @@ async function handleSaveAs(): Promise<void> {
     return
   }
 
-  const input = window.prompt('请输入另存为路径：', suggestSaveAsPath(basePath))
+  const input = window.prompt(t('file.inspector.prompt.saveAsPath'), suggestSaveAsPath(basePath))
   if (input === null) {
     return
   }
 
   const targetPath = normalizeRemotePath(input)
   if (!targetPath || targetPath === '/') {
-    loadError.value = '另存为路径不合法。'
+    loadError.value = t('file.inspector.error.invalidSaveAsPath')
     return
   }
 
@@ -665,10 +678,10 @@ async function handleSaveAs(): Promise<void> {
 
   try {
     await writeText(targetPath, editorText.value)
-    actionMessage.value = `已另存为：${targetPath}`
+    actionMessage.value = t('file.inspector.message.savedAs', { path: targetPath })
     emit('saved-as', targetPath)
   } catch (reason) {
-    const message = toErrorMessage(reason, '另存为失败')
+    const message = toErrorMessage(reason, t('file.inspector.error.saveAsFailed'))
     loadError.value = message
     emit('error', message)
   } finally {
@@ -676,14 +689,12 @@ async function handleSaveAs(): Promise<void> {
   }
 }
 
-function confirmEncodingWriteback(actionLabel: '保存' | '另存为'): boolean {
+function confirmEncodingWriteback(actionLabel: string): boolean {
   if (detectedEncoding.value !== 'GB18030') {
     return true
   }
 
-  return window.confirm(
-    `检测到当前文件编码为 GB18030。\n将按 UTF-8 写回，可能改变原文件编码。\n确认继续${actionLabel}吗？`,
-  )
+  return window.confirm(t('file.inspector.confirm.encodingWriteback', { action: actionLabel }))
 }
 
 function handleBeforeUnload(event: BeforeUnloadEvent): void {
@@ -749,15 +760,17 @@ onBeforeUnmount(() => {
   <section class="remote-file-inspector">
     <header class="inspector-header">
       <div class="inspector-title">
-        <h3>文件预览 / 基础编辑</h3>
+        <h3>{{ t('file.inspector.title') }}</h3>
         <p :title="fileLabel">{{ fileLabel }}</p>
-        <p v-if="detectedEncoding && isTextBased" class="inspector-meta">当前编码：{{ detectedEncoding }}</p>
+        <p v-if="detectedEncoding && isTextBased" class="inspector-meta">
+          {{ t('file.inspector.currentEncoding', { encoding: detectedEncoding }) }}
+        </p>
         <p v-if="saveEncodingLabel" class="inspector-meta">{{ saveEncodingLabel }}</p>
       </div>
 
       <div class="inspector-actions">
         <button type="button" :disabled="loading || saving || !selectedFile" @click="void handleReload">
-          重新加载
+          {{ t('file.inspector.action.reload') }}
         </button>
         <button
           v-if="isTextBased"
@@ -765,17 +778,17 @@ onBeforeUnmount(() => {
           :disabled="loading || saving || !canEdit"
           @click="switchTab(activeTab === 'preview' ? 'edit' : 'preview')"
         >
-          {{ activeTab === 'preview' ? '编辑' : '预览' }}
+          {{ activeTab === 'preview' ? t('file.inspector.action.edit') : t('file.inspector.action.preview') }}
         </button>
         <button type="button" :disabled="!canSave" @click="void handleSave">
-          {{ saving ? '保存中...' : '保存' }}
+          {{ saving ? t('file.inspector.action.saving') : t('file.inspector.action.save') }}
         </button>
         <button
           type="button"
           :disabled="loading || saving || !isTextBased || !selectedFile || contentTruncated"
           @click="void handleSaveAs"
         >
-          另存为
+          {{ t('file.inspector.action.saveAs') }}
         </button>
       </div>
     </header>
@@ -784,37 +797,37 @@ onBeforeUnmount(() => {
     <p v-else-if="capabilityHint" class="inspector-message is-warning">{{ capabilityHint }}</p>
     <p v-else-if="actionMessage" class="inspector-message is-success">{{ actionMessage }}</p>
     <p v-else-if="previewNotice" class="inspector-message is-warning">{{ previewNotice }}</p>
-    <p v-else-if="isDirty" class="inspector-message is-warning">当前文件有未保存修改</p>
+    <p v-else-if="isDirty" class="inspector-message is-warning">{{ t('file.inspector.message.unsavedChanges') }}</p>
 
     <main class="inspector-body">
-      <div v-if="!sessionIdValue" class="inspector-placeholder">请选择会话后再查看文件。</div>
-      <div v-else-if="!props.entry" class="inspector-placeholder">点击右侧文件列表中的文件开始预览。</div>
-      <div v-else-if="props.entry.type !== 'file'" class="inspector-placeholder">当前选中的是目录，不支持内容预览。</div>
-      <div v-else-if="loading" class="inspector-placeholder">正在读取文件内容...</div>
+      <div v-if="!sessionIdValue" class="inspector-placeholder">{{ t('file.inspector.placeholder.selectSession') }}</div>
+      <div v-else-if="!props.entry" class="inspector-placeholder">{{ t('file.inspector.placeholder.selectFile') }}</div>
+      <div v-else-if="props.entry.type !== 'file'" class="inspector-placeholder">{{ t('file.inspector.placeholder.directoryUnsupported') }}</div>
+      <div v-else-if="loading" class="inspector-placeholder">{{ t('file.inspector.placeholder.loading') }}</div>
       <div v-else-if="capabilityHint" class="inspector-placeholder">{{ capabilityHint }}</div>
       <div v-else-if="previewKind === 'image'" class="image-preview-wrap">
         <img v-if="imageDataUrl" :src="imageDataUrl" :alt="props.entry.name" class="image-preview" />
-        <p v-else class="inspector-placeholder">图片内容为空。</p>
+        <p v-else class="inspector-placeholder">{{ t('file.inspector.placeholder.emptyImage') }}</p>
       </div>
       <div v-else-if="isTextBased && activeTab === 'edit'" class="editor-wrap">
         <textarea
           v-model="editorText"
           class="text-editor"
           spellcheck="false"
-          :placeholder="'可编辑文本内容，支持保存与另存为'"
+          :placeholder="t('file.inspector.placeholder.editor')"
         />
       </div>
       <div v-else-if="previewKind === 'json'" class="text-preview-wrap">
-        <p v-if="jsonParseError" class="json-error">JSON 格式化失败：{{ jsonParseError }}</p>
+        <p v-if="jsonParseError" class="json-error">{{ t('file.inspector.error.jsonParseFailed') }}: {{ jsonParseError }}</p>
         <pre class="text-preview">{{ previewText }}</pre>
       </div>
       <div v-else-if="previewKind === 'log'" class="log-preview-wrap">
         <div class="log-tools">
           <label>
             <input v-model="autoScrollLog" type="checkbox" />
-            自动滚动到底部
+            {{ t('file.inspector.action.autoScrollBottom') }}
           </label>
-          <button type="button" @click="scrollLogToBottom">滚动到底部</button>
+          <button type="button" @click="scrollLogToBottom">{{ t('file.inspector.action.scrollBottom') }}</button>
         </div>
         <div ref="logViewportRef" class="log-viewport">
           <pre class="text-preview">{{ previewText }}</pre>
@@ -823,7 +836,7 @@ onBeforeUnmount(() => {
       <div v-else-if="previewKind === 'text'" class="text-preview-wrap">
         <pre class="text-preview">{{ previewText }}</pre>
       </div>
-      <div v-else class="inspector-placeholder">该文件类型暂不支持预览。</div>
+      <div v-else class="inspector-placeholder">{{ t('file.inspector.placeholder.unsupportedPreview') }}</div>
     </main>
   </section>
 </template>

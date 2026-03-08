@@ -12,6 +12,8 @@ import type {
   TerminalResizeOptions,
 } from "../../shared/types/terminal";
 import type {
+  SftpExtractZipResponse,
+  SftpTransferProgress,
   SftpListItem,
   SftpReadFileMode,
   SftpReadFileResponse,
@@ -122,14 +124,24 @@ export class SSHService {
     return context.sftpService.list(remotePath);
   }
 
-  public async get(sessionId: string, remotePath: string, localPath: string): Promise<void> {
+  public async get(
+    sessionId: string,
+    remotePath: string,
+    localPath: string,
+    onProgress?: (progress: SftpTransferProgress) => void,
+  ): Promise<void> {
     const context = this.requireConnectedSession(sessionId);
-    await context.sftpService.get(remotePath, localPath);
+    await context.sftpService.get(remotePath, localPath, onProgress);
   }
 
-  public async put(sessionId: string, localPath: string, remotePath: string): Promise<void> {
+  public async put(
+    sessionId: string,
+    localPath: string,
+    remotePath: string,
+    onProgress?: (progress: SftpTransferProgress) => void,
+  ): Promise<void> {
     const context = this.requireConnectedSession(sessionId);
-    await context.sftpService.put(localPath, remotePath);
+    await context.sftpService.putWithProgress(localPath, remotePath, onProgress);
   }
 
   public async readFile(
@@ -175,6 +187,81 @@ export class SSHService {
   public async rename(sessionId: string, fromPath: string, toPath: string): Promise<void> {
     const context = this.requireConnectedSession(sessionId);
     await context.sftpService.rename(fromPath, toPath);
+  }
+
+  public async extractZip(
+    sessionId: string,
+    remoteZipPath: string,
+    targetDirectoryPath?: string,
+  ): Promise<SftpExtractZipResponse> {
+    const normalizedZipPath = normalizeRemoteUnixPath(remoteZipPath);
+    if (!isZipFilePath(normalizedZipPath)) {
+      throw new SSHServiceError(
+        "validation_error",
+        `Only .zip files can be extracted: ${normalizedZipPath}`,
+      );
+    }
+
+    const fallbackTargetPath = toDefaultZipExtractTargetPath(normalizedZipPath);
+    const parentTargetPath = toRemoteParentPath(normalizedZipPath);
+    const normalizedExplicitTargetPath = targetDirectoryPath?.trim()
+      ? normalizeRemoteUnixPath(targetDirectoryPath)
+      : null;
+
+    const quotedZipPath = quoteShellArg(normalizedZipPath);
+    const quotedFallbackTargetPath = quoteShellArg(fallbackTargetPath);
+    const quotedParentTargetPath = quoteShellArg(parentTargetPath);
+    const quotedExplicitTargetPath = normalizedExplicitTargetPath
+      ? quoteShellArg(normalizedExplicitTargetPath)
+      : null;
+    const markerPrefix = "__NOVARTERM_EXTRACT_TARGET__:";
+    const command = normalizedExplicitTargetPath
+      ? [
+          `command -v unzip >/dev/null 2>&1 || { echo 'unzip command not found on remote host' >&2; exit 127; }`,
+          `TARGET_PATH=${quotedExplicitTargetPath}`,
+          `mkdir -p "$TARGET_PATH"`,
+          `unzip -o ${quotedZipPath} -d "$TARGET_PATH"`,
+          `printf '\\n${markerPrefix}%s\\n' "$TARGET_PATH"`,
+        ].join("\n")
+      : [
+          `command -v unzip >/dev/null 2>&1 || { echo 'unzip command not found on remote host' >&2; exit 127; }`,
+          `ZIP_PATH=${quotedZipPath}`,
+          `FALLBACK_TARGET=${quotedFallbackTargetPath}`,
+          `PARENT_TARGET=${quotedParentTargetPath}`,
+          `LIST_FILE="$(mktemp)"`,
+          `trap 'rm -f "$LIST_FILE"' EXIT`,
+          `unzip -Z1 "$ZIP_PATH" > "$LIST_FILE"`,
+          `TOP_COUNT="$(awk -F/ 'NF{print $1}' "$LIST_FILE" | LC_ALL=C sort -u | sed '/^$/d' | wc -l | tr -d ' ')"`,
+          `TARGET_PATH="$FALLBACK_TARGET"`,
+          `if [ "$TOP_COUNT" = "1" ]; then`,
+          `  TOP_NAME="$(awk -F/ 'NF{print $1}' "$LIST_FILE" | sed -n '1p')"`,
+          `  if ! grep -Fx -- "$TOP_NAME" "$LIST_FILE" >/dev/null 2>&1 && grep -F -- "$TOP_NAME/" "$LIST_FILE" >/dev/null 2>&1; then`,
+          `    TARGET_PATH="$PARENT_TARGET"`,
+          `  fi`,
+          `fi`,
+          `mkdir -p "$TARGET_PATH"`,
+          `unzip -o "$ZIP_PATH" -d "$TARGET_PATH"`,
+          `printf '\\n${markerPrefix}%s\\n' "$TARGET_PATH"`,
+        ].join("\n");
+    const result = await this.execCommand(sessionId, command);
+
+    if ((result.code !== null && result.code !== 0) || result.signal) {
+      const detail = (result.stderr || result.stdout || "").trim() || `Exit code: ${result.code}`;
+      throw new SSHServiceError(
+        "connection_error",
+        `Failed to extract zip file: ${normalizedZipPath}`,
+        detail,
+      );
+    }
+    const resolvedTargetPath = parseExtractTargetFromCommandOutput(
+      result.stdout,
+      fallbackTargetPath,
+    );
+
+    return {
+      remoteZipPath: normalizedZipPath,
+      targetDirectoryPath: resolvedTargetPath,
+    };
   }
 
   public async getTerminalCwd(sessionId: string, options: TerminalCwdOptions = {}): Promise<string> {
@@ -828,6 +915,61 @@ function toChunkString(chunk: Buffer | string): string {
   return typeof chunk === "string" ? chunk : chunk.toString("utf8");
 }
 
+function quoteShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function normalizeRemoteUnixPath(input: string): string {
+  const replaced = input.replaceAll("\\", "/").trim();
+  if (!replaced) {
+    throw new SSHServiceError("validation_error", "Path must not be empty");
+  }
+
+  const collapsed = replaced.replace(/\/{2,}/g, "/");
+  const normalized = collapsed.startsWith("/") ? collapsed : `/${collapsed}`;
+  return normalized.length > 1 && normalized.endsWith("/")
+    ? normalized.slice(0, -1)
+    : normalized;
+}
+
+function isZipFilePath(remotePath: string): boolean {
+  const baseName = path.posix.basename(remotePath);
+  return /\.zip$/i.test(baseName);
+}
+
+function toDefaultZipExtractTargetPath(remoteZipPath: string): string {
+  const baseName = path.posix.basename(remoteZipPath);
+  const targetNameCandidate = baseName.replace(/\.zip$/i, "").trim();
+  const targetName = targetNameCandidate || "archive";
+  const parentPath = path.posix.dirname(remoteZipPath);
+  return path.posix.join(parentPath || "/", targetName);
+}
+
+function toRemoteParentPath(remotePath: string): string {
+  const parentPath = path.posix.dirname(remotePath);
+  return parentPath && parentPath !== "." ? parentPath : "/";
+}
+
+function parseExtractTargetFromCommandOutput(stdout: string, fallbackPath: string): string {
+  const markerPrefix = "__NOVARTERM_EXTRACT_TARGET__:";
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.startsWith(markerPrefix)) {
+      continue;
+    }
+    const value = line.slice(markerPrefix.length).trim();
+    if (value) {
+      return value;
+    }
+  }
+
+  return fallbackPath;
+}
+
 function execCommandOnClient(client: Client, command: string): Promise<SSHCommandResult> {
   return new Promise<SSHCommandResult>((resolve, reject) => {
     client.exec(command, (error, stream) => {
@@ -915,7 +1057,7 @@ interface LocalShellLaunchSpec {
   args: string[];
 }
 
-const nodeRequire = createRequire(import.meta.url);
+const nodeRequire = createRequire(__filename);
 let nodePtyHelperPermissionChecked = false;
 
 function normalizeLocalShellName(command: string): string | null {

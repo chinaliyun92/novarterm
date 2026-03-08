@@ -28,8 +28,22 @@ export function registerShellIPCHandlers(ipcMain: IpcMainLike): void {
     await shell.openExternal(trimmed)
     return { ok: true }
   })
+  ipcMain.handle(SHELL_IPC_CHANNELS.openPath, async (_event, rawPath: string) => {
+    if (typeof rawPath !== 'string' || !rawPath.trim()) {
+      return { ok: false, error: 'missing path' }
+    }
+
+    const targetPath = rawPath.trim()
+    const openError = await shell.openPath(targetPath)
+    if (openError) {
+      return { ok: false, error: openError }
+    }
+
+    return { ok: true }
+  })
 }
 
 export function clearShellIPCHandlers(ipcMain: IpcMainLike): void {
   ipcMain.removeHandler(SHELL_IPC_CHANNELS.openExternal)
+  ipcMain.removeHandler(SHELL_IPC_CHANNELS.openPath)
 }

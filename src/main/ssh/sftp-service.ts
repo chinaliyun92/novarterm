@@ -1,5 +1,6 @@
 import SftpClient from "ssh2-sftp-client";
 import type {
+  SftpTransferProgress,
   SftpListItem,
   SftpReadFileMode,
   SftpReadFileResponse,
@@ -15,6 +16,8 @@ type RawSftpListItem = {
   modifyTime: number;
   accessTime: number;
 };
+
+type TransferProgressListener = (progress: SftpTransferProgress) => void;
 
 export class SftpService {
   private client: SftpClient | null = null;
@@ -59,19 +62,75 @@ export class SftpService {
     }, "SFTP list failed");
   }
 
-  public async get(remotePath: string, localPath: string): Promise<void> {
+  public async get(
+    remotePath: string,
+    localPath: string,
+    onProgress?: TransferProgressListener,
+  ): Promise<void> {
     await this.withClient(
       async (client) => {
-        await client.fastGet(remotePath, localPath);
+        await client.fastGet(remotePath, localPath, {
+          step: (totalTransferred, _chunk, total) => {
+            if (!onProgress) {
+              return;
+            }
+
+            const safeTransferred = Number.isFinite(totalTransferred)
+              ? Math.max(0, Math.floor(totalTransferred))
+              : 0;
+            const safeTotal =
+              Number.isFinite(total) && total > 0 ? Math.max(0, Math.floor(total)) : null;
+            const percent =
+              safeTotal && safeTotal > 0
+                ? Math.min(100, Math.round((safeTransferred / safeTotal) * 100))
+                : null;
+
+            onProgress({
+              transferredBytes: safeTransferred,
+              totalBytes: safeTotal,
+              percent,
+            });
+          },
+        });
       },
       "SFTP get failed",
     );
   }
 
   public async put(localPath: string, remotePath: string): Promise<void> {
+    await this.putWithProgress(localPath, remotePath);
+  }
+
+  public async putWithProgress(
+    localPath: string,
+    remotePath: string,
+    onProgress?: TransferProgressListener,
+  ): Promise<void> {
     await this.withClient(
       async (client) => {
-        await client.fastPut(localPath, remotePath);
+        await client.fastPut(localPath, remotePath, {
+          step: (totalTransferred, _chunk, total) => {
+            if (!onProgress) {
+              return;
+            }
+
+            const safeTransferred = Number.isFinite(totalTransferred)
+              ? Math.max(0, Math.floor(totalTransferred))
+              : 0;
+            const safeTotal =
+              Number.isFinite(total) && total > 0 ? Math.max(0, Math.floor(total)) : null;
+            const percent =
+              safeTotal && safeTotal > 0
+                ? Math.min(100, Math.round((safeTransferred / safeTotal) * 100))
+                : null;
+
+            onProgress({
+              transferredBytes: safeTransferred,
+              totalBytes: safeTotal,
+              percent,
+            });
+          },
+        });
       },
       "SFTP put failed",
     );

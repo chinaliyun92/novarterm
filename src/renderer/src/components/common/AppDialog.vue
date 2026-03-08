@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { onBeforeUnmount, watch } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
+import { useI18n } from '../../composables/useI18n'
+
+const i18n = useI18n()
+
+function t(key: string, params?: Record<string, string | number>): string {
+  return i18n.t(key, params)
+}
 
 const props = withDefaults(
   defineProps<{
@@ -11,8 +18,8 @@ const props = withDefaults(
     loading?: boolean
   }>(),
   {
-    confirmText: '确定',
-    cancelText: '取消',
+    confirmText: '',
+    cancelText: '',
     confirmDisabled: false,
     loading: false,
   },
@@ -22,6 +29,10 @@ const emit = defineEmits<{
   (event: 'close'): void
   (event: 'confirm'): void
 }>()
+
+const cancelButtonText = computed(() => props.cancelText || t('settings.cancel'))
+const confirmButtonText = computed(() => props.confirmText || t('common.confirm'))
+const processingText = computed(() => t('common.processing'))
 
 function onEscape(event: KeyboardEvent): void {
   if (!props.open) {
@@ -78,7 +89,7 @@ function handleConfirm(): void {
 
         <footer class="app-dialog-footer">
           <button type="button" class="btn-secondary" :disabled="props.loading" @click="emit('close')">
-            {{ props.cancelText }}
+            {{ cancelButtonText }}
           </button>
           <button
             type="button"
@@ -86,7 +97,7 @@ function handleConfirm(): void {
             :disabled="props.loading || props.confirmDisabled"
             @click="handleConfirm"
           >
-            {{ props.loading ? '处理中...' : props.confirmText }}
+            {{ props.loading ? processingText : confirmButtonText }}
           </button>
         </footer>
       </section>

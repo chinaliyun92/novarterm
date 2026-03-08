@@ -1,5 +1,14 @@
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+  readonly VITE_AI_PROXY_BASE_URL_DEV?: string
+  readonly VITE_AI_PROXY_BASE_URL_PROD?: string
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}
+
 import type {
   CreateServerInput,
   Server,
@@ -15,6 +24,8 @@ import type {
   LocalFileCreateDirectoryRequest,
   LocalFileCreateFileRequest,
   LocalFileDeleteRequest,
+  LocalFileImportData,
+  LocalFileImportRequest,
   LocalFileListData,
   LocalFileListRequest,
   LocalFileRenameRequest,
@@ -31,6 +42,8 @@ import type {
   ServersListData
 } from '../shared/types/server'
 import type {
+  SettingsCleanCommandBarHistoryRequest,
+  SettingsCleanCommandBarHistoryResponse,
   SettingsGetResponse,
   SettingsResult,
   SettingsSetResponse,
@@ -44,6 +57,10 @@ import type {
   UpdateResult,
 } from '../shared/types/update'
 import type {
+  SftpDownloadProgressEvent,
+  SftpUploadProgressEvent,
+  SftpExtractZipRequest,
+  SftpExtractZipResponse,
   SftpGetRequest,
   SftpListItem,
   SftpListRequest,
@@ -97,7 +114,6 @@ declare global {
     create: (input: CreateServerInput) => Promise<ServerResult<Server>>
     update: (serverId: number, input: UpdateServerInput) => Promise<ServerResult<Server>>
     delete: (serverId: number) => Promise<ServerResult<DeleteResult>>
-    favorite: (serverId: number, isFavorite?: boolean) => Promise<ServerResult<Server>>
     connect: (serverId: number, sessionId: string) => Promise<ServerResult<ServerConnectData>>
     reconnect: (serverId: number, sessionId: string) => Promise<ServerResult<ServerSSHActionData>>
     disconnect: (serverId: number, sessionId: string) => Promise<ServerResult<ServerSSHActionData>>
@@ -114,6 +130,7 @@ declare global {
     mkdir: (request: SftpMkdirRequest) => Promise<SSHResult<void>>
     rm: (request: SftpRmRequest) => Promise<SSHResult<void>>
     rename: (request: SftpRenameRequest) => Promise<SSHResult<void>>
+    extractZip: (request: SftpExtractZipRequest) => Promise<SSHResult<SftpExtractZipResponse>>
   }
 
   interface SshApi {
@@ -121,12 +138,17 @@ declare global {
     disconnect: (request: SSHSessionRequest) => Promise<SSHResult<SSHConnectionSnapshot>>
     reconnect: (request: SSHSessionRequest) => Promise<SSHResult<SSHConnectionSnapshot>>
     status: (request: SSHSessionRequest) => Promise<SSHResult<SSHConnectionSnapshot>>
+    onSftpDownloadProgress: (listener: (event: SftpDownloadProgressEvent) => void) => Unsubscribe
+    onSftpUploadProgress: (listener: (event: SftpUploadProgressEvent) => void) => Unsubscribe
     sftp: SshSftpApi
   }
 
   interface SettingsApi {
     get: (key: string) => Promise<SettingsResult<SettingsGetResponse>>
     set: (key: string, value: string) => Promise<SettingsResult<SettingsSetResponse>>
+    cleanCommandBarHistory: (
+      request: SettingsCleanCommandBarHistoryRequest,
+    ) => Promise<SettingsResult<SettingsCleanCommandBarHistoryResponse>>
   }
 
   interface UpdateApi {
@@ -141,6 +163,7 @@ declare global {
 
   interface ShellApi {
     openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
+    openPath: (path: string) => Promise<{ ok: boolean; error?: string }>
   }
 
   interface LogApi {
@@ -153,6 +176,7 @@ declare global {
     createDirectory: (request: LocalFileCreateDirectoryRequest) => Promise<LocalFileResult<LocalFileActionData>>
     rename: (request: LocalFileRenameRequest) => Promise<LocalFileResult<LocalFileActionData>>
     delete: (request: LocalFileDeleteRequest) => Promise<LocalFileResult<LocalFileActionData>>
+    importPaths: (request: LocalFileImportRequest) => Promise<LocalFileResult<LocalFileImportData>>
   }
 
   type Unsubscribe = () => void

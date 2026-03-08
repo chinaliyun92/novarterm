@@ -1,15 +1,25 @@
 <script setup lang="ts">
-import { toRef } from 'vue'
+import { computed, toRef } from 'vue'
 import type { SftpListItem } from '../../../../shared/types/ssh'
+import type { LocalFileListData } from '../../../../shared/types/local-file'
+import { useI18n } from '../../composables/useI18n'
 import { useRemoteFileBrowserState } from '../../composables/useRemoteFileBrowserState'
 import {
   getRemoteParentPath,
+  isZipFileName,
   joinRemotePath,
   normalizeRemotePath,
+  normalizeRemoteEntryName,
   type RemoteFileEntry,
   type RemoteUploadItem,
 } from '../../types/file-browser'
 import UnifiedFileBrowser, { type UnifiedFileEntry } from './UnifiedFileBrowser.vue'
+
+const i18n = useI18n()
+
+function t(key: string, params?: Record<string, string | number>): string {
+  return i18n.t(key, params)
+}
 
 interface RemoteFileBrowserProps {
   paneSessionId?: string | null
@@ -24,8 +34,13 @@ const props = withDefaults(defineProps<RemoteFileBrowserProps>(), {
   paneSessionId: null,
   initialPath: '/',
   autoLoad: true,
-  emptyText: '当前目录为空',
+  emptyText: '',
   sessionCwd: null,
+})
+
+const resolvedEmptyText = computed<string>(() => {
+  const value = props.emptyText?.trim() ?? ''
+  return value || t('file.emptyDirectory')
 })
 
 const emit = defineEmits<{
@@ -69,7 +84,7 @@ function toRemoteEntry(entry: UnifiedFileEntry): RemoteFileEntry {
 
 async function listRemotePath(path: string): Promise<{ path: string; parentPath: string | null; entries: UnifiedFileEntry[] }> {
   if (!state.hasSession.value) {
-    throw new Error('请选择已连接的 session')
+    throw new Error(t('file.remote.error.sessionRequired'))
   }
 
   const normalizedPath = normalizeRemotePath(path)
@@ -121,6 +136,99 @@ function resolveLocalPath(file: File): string | null {
   return null
 }
 
+function normalizeUploadRelativePath(value: string): string | null {
+  const normalized = value.replaceAll('\\', '/').trim()
+  if (!normalized) {
+    return null
+  }
+
+  const parts = normalized
+    .split('/')
+    .map((item) => item.trim())
+    .filter((item) => item && item !== '.')
+
+  if (!parts.length) {
+    return null
+  }
+
+  if (parts.some((part) => part === '..')) {
+    return null
+  }
+
+  const [first, ...rest] = parts
+  const safeFirst = normalizeRemoteEntryName(first)
+  if (!safeFirst) {
+    return null
+  }
+
+  return [safeFirst, ...rest].join('/')
+}
+
+function joinRelativeUploadPath(base: string, next: string): string {
+  const normalizedBase = base.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
+  const normalizedNext = next.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
+  if (!normalizedBase) {
+    return normalizedNext
+  }
+  if (!normalizedNext) {
+    return normalizedBase
+  }
+  return `${normalizedBase}/${normalizedNext}`
+}
+
+function toPathBasename(localPath: string): string {
+  const normalized = localPath.replaceAll('\\', '/')
+  const segments = normalized.split('/').filter((item) => item.length > 0)
+  return segments.length ? segments[segments.length - 1] : ''
+}
+
+async function listLocalDirectoryEntries(localPath: string): Promise<LocalFileListData['entries'] | null> {
+  try {
+    const result = await window.electronAPI.localFile.list({ path: localPath })
+    if (!result.ok) {
+      return null
+    }
+
+    return result.data.entries
+  } catch {
+    return null
+  }
+}
+
+async function appendDirectoryUploadItems(
+  localDirectoryPath: string,
+  relativePrefix: string,
+  currentPath: string,
+  uploads: RemoteUploadItem[],
+): Promise<void> {
+  const entries = await listLocalDirectoryEntries(localDirectoryPath)
+  if (!entries?.length) {
+    return
+  }
+
+  for (const entry of entries) {
+    const entryName = normalizeRemoteEntryName(entry.name)
+    if (!entryName) {
+      continue
+    }
+
+    const entryRelativePath = joinRelativeUploadPath(relativePrefix, entryName)
+    if (entry.type === 'directory') {
+      await appendDirectoryUploadItems(entry.path, entryRelativePath, currentPath, uploads)
+      continue
+    }
+
+    if (entry.type !== 'file' && entry.type !== 'link' && entry.type !== 'unknown') {
+      continue
+    }
+
+    uploads.push({
+      localPath: entry.path,
+      remotePath: joinRemotePath(currentPath, entryRelativePath),
+    })
+  }
+}
+
 async function uploadRemoteFiles(currentPath: string, files: File[]): Promise<void> {
   const uploads: RemoteUploadItem[] = []
   let skippedCount = 0
@@ -139,11 +247,117 @@ async function uploadRemoteFiles(currentPath: string, files: File[]): Promise<vo
   }
 
   if (!uploads.length) {
-    throw new Error('未读取到可上传的本地路径，请确认拖拽来源可访问。')
+    throw new Error(t('file.remote.error.noUploadPathDetected'))
   }
 
-  const skippedText = skippedCount > 0 ? `\n将跳过 ${skippedCount} 个不可用条目。` : ''
-  const confirmed = window.confirm(`确认上传 ${uploads.length} 个文件到「${currentPath}」吗？${skippedText}`)
+  const confirmed = window.confirm(
+    t('file.remote.confirm.uploadFiles', {
+      count: uploads.length,
+      path: currentPath,
+      skippedText:
+        skippedCount > 0
+          ? `\n${t('file.remote.upload.skippedCount', { count: skippedCount })}`
+          : '',
+    }),
+  )
+  if (!confirmed) {
+    return
+  }
+
+  await state.uploadFiles(uploads)
+}
+
+async function uploadRemotePaths(currentPath: string, localPaths: string[]): Promise<void> {
+  const uploads: RemoteUploadItem[] = []
+  let skippedCount = 0
+
+  for (const localPath of localPaths) {
+    const normalizedLocalPath = localPath.trim()
+    if (!normalizedLocalPath) {
+      skippedCount += 1
+      continue
+    }
+
+    const rootName = normalizeRemoteEntryName(toPathBasename(normalizedLocalPath))
+    if (!rootName) {
+      skippedCount += 1
+      continue
+    }
+
+    const beforeCount = uploads.length
+    const directoryEntries = await listLocalDirectoryEntries(normalizedLocalPath)
+    if (directoryEntries !== null) {
+      await appendDirectoryUploadItems(normalizedLocalPath, rootName, currentPath, uploads)
+      if (uploads.length === beforeCount) {
+        skippedCount += 1
+      }
+      continue
+    }
+
+    uploads.push({
+      localPath: normalizedLocalPath,
+      remotePath: joinRemotePath(currentPath, rootName),
+    })
+  }
+
+  if (!uploads.length) {
+    throw new Error(t('file.remote.error.noUploadPathDetected'))
+  }
+
+  const confirmed = window.confirm(
+    t('file.remote.confirm.uploadFiles', {
+      count: uploads.length,
+      path: currentPath,
+      skippedText:
+        skippedCount > 0
+          ? `\n${t('file.remote.upload.skippedCount', { count: skippedCount })}`
+          : '',
+    }),
+  )
+  if (!confirmed) {
+    return
+  }
+
+  await state.uploadFiles(uploads)
+}
+
+async function uploadRemoteDirectory(currentPath: string, files: File[]): Promise<void> {
+  const uploads: RemoteUploadItem[] = []
+  let skippedCount = 0
+
+  for (const file of files) {
+    const localPath = resolveLocalPath(file)
+    if (!localPath) {
+      skippedCount += 1
+      continue
+    }
+
+    const relativePath = normalizeUploadRelativePath(file.webkitRelativePath || file.name)
+    if (!relativePath) {
+      skippedCount += 1
+      continue
+    }
+
+    uploads.push({
+      localPath,
+      remotePath: joinRemotePath(currentPath, relativePath),
+    })
+  }
+
+  if (!uploads.length) {
+    throw new Error(t('file.remote.error.noUploadDirectoryDetected'))
+  }
+
+  const confirmed = window.confirm(
+    t('file.remote.confirm.uploadDirectory', {
+      count: uploads.length,
+      path: currentPath,
+      skippedText:
+        skippedCount > 0
+          ? `\n${t('file.remote.upload.skippedCount', { count: skippedCount })}`
+          : '',
+    }),
+  )
   if (!confirmed) {
     return
   }
@@ -154,19 +368,41 @@ async function uploadRemoteFiles(currentPath: string, files: File[]): Promise<vo
 async function downloadRemoteEntry(entry: UnifiedFileEntry): Promise<void> {
   const remoteEntry = toRemoteEntry(entry)
   if (remoteEntry.type !== 'file') {
-    throw new Error('当前仅支持下载文件，不支持目录下载。')
+    throw new Error(t('file.remote.error.downloadFileOnly'))
   }
 
   const saveDialogResult = await window.electronAPI.dialog.saveFile({
-    title: `保存文件：${remoteEntry.name}`,
+    title: t('file.remote.dialog.saveTitle', { name: remoteEntry.name }),
     defaultPath: remoteEntry.name,
-    buttonLabel: '保存',
+    buttonLabel: t('file.remote.dialog.saveButton'),
   })
   if (saveDialogResult.canceled || !saveDialogResult.filePath) {
     return
   }
 
   await state.downloadFile(remoteEntry, saveDialogResult.filePath)
+}
+
+function canExtractRemoteEntry(entry: UnifiedFileEntry): boolean {
+  return entry.type === 'file' && isZipFileName(entry.name)
+}
+
+async function extractRemoteEntry(entry: UnifiedFileEntry): Promise<void> {
+  const remoteEntry = toRemoteEntry(entry)
+  if (remoteEntry.type !== 'file' || !isZipFileName(remoteEntry.name)) {
+    throw new Error(t('file.remote.error.extractZipOnly'))
+  }
+
+  const confirmed = window.confirm(
+    t('file.remote.confirm.extractZip', {
+      name: remoteEntry.name,
+    }),
+  )
+  if (!confirmed) {
+    return
+  }
+
+  await state.extractZip(remoteEntry)
 }
 
 function handlePathChange(path: string): void {
@@ -187,7 +423,7 @@ function handleEntryClick(entry: UnifiedFileEntry): void {
     :pane-session-id="props.paneSessionId"
     :initial-path="props.autoLoad ? props.initialPath : null"
     :reload-key="props.sessionCwd ?? ''"
-    :empty-text="props.emptyText"
+    :empty-text="resolvedEmptyText"
     :use-action-context-menu="true"
     :hide-create-action-buttons="true"
     :hide-row-action-buttons="true"
@@ -197,8 +433,13 @@ function handleEntryClick(entry: UnifiedFileEntry): void {
     :on-rename-entry="renameRemoteEntry"
     :on-delete-entry="deleteRemoteEntry"
     :on-upload-files="uploadRemoteFiles"
+    :on-upload-directory="uploadRemoteDirectory"
+    :on-upload-paths="uploadRemotePaths"
+    :upload-progress="state.uploadProgress.value"
     :on-download-entry="downloadRemoteEntry"
     :can-download-entry="(entry: UnifiedFileEntry) => entry.type === 'file'"
+    :on-extract-entry="extractRemoteEntry"
+    :can-extract-entry="canExtractRemoteEntry"
     @path-change="handlePathChange"
     @error="handleError"
     @entry-click="handleEntryClick"

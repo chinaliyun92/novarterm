@@ -13,14 +13,6 @@ export type {
   CreateServerInput,
   UpdateServerInput,
   SSHConnectionSnapshot,
+  SSHConnectionState,
   ServerResult,
-}
-
-export const CONNECTION_STATE_LABELS: Record<SSHConnectionState, string> = {
-  disconnected: '未连接',
-  connecting: '连接中',
-  connected: '已连接',
-  disconnecting: '断开中',
-  reconnecting: '重连中',
-  failed: '失败',
 }

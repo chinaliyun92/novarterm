@@ -10,6 +10,8 @@ import type {
   LocalFileDeleteRequest,
   LocalFileEntry,
   LocalFileErrorPayload,
+  LocalFileImportData,
+  LocalFileImportRequest,
   LocalFileListData,
   LocalFileListRequest,
   LocalFileRenameRequest,
@@ -195,6 +197,45 @@ async function deleteLocalEntry(request: LocalFileDeleteRequest): Promise<LocalF
   return { path: targetPath }
 }
 
+async function importLocalPaths(request: LocalFileImportRequest): Promise<LocalFileImportData> {
+  const targetDirectoryPath = normalizeAbsolutePath(request.targetDirectoryPath, '目标目录路径')
+  await ensureDirectoryExists(targetDirectoryPath)
+
+  if (!Array.isArray(request.sourcePaths) || request.sourcePaths.length === 0) {
+    throw new LocalFileValidationError('上传路径不能为空')
+  }
+
+  const normalizedSourcePaths = [...new Set(
+    request.sourcePaths
+      .map((item) => normalizeAbsolutePath(item, '源路径'))
+      .filter((item) => item.length > 0),
+  )]
+  if (!normalizedSourcePaths.length) {
+    throw new LocalFileValidationError('上传路径不能为空')
+  }
+
+  let importedCount = 0
+  for (const sourcePath of normalizedSourcePaths) {
+    const sourceName = path.basename(sourcePath)
+    if (!sourceName) {
+      throw new LocalFileValidationError(`源路径无效: ${sourcePath}`)
+    }
+
+    const destinationPath = path.join(targetDirectoryPath, sourceName)
+    await fs.cp(sourcePath, destinationPath, {
+      recursive: true,
+      force: true,
+      errorOnExist: false,
+    })
+    importedCount += 1
+  }
+
+  return {
+    targetDirectoryPath,
+    importedCount,
+  }
+}
+
 export function registerLocalFileIPCHandlers(ipcMain: IpcMainLike): void {
   clearLocalFileIPCHandlers(ipcMain)
 
@@ -275,6 +316,24 @@ export function registerLocalFileIPCHandlers(ipcMain: IpcMainLike): void {
     ): Promise<LocalFileResult<LocalFileActionData>> => {
       try {
         const data = await deleteLocalEntry(request)
+        return { ok: true, data }
+      } catch (error) {
+        return {
+          ok: false,
+          error: toErrorPayload(error),
+        }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    LOCAL_FILE_IPC_CHANNELS.importPaths,
+    async (
+      _event: IpcMainInvokeEvent,
+      request: LocalFileImportRequest,
+    ): Promise<LocalFileResult<LocalFileImportData>> => {
+      try {
+        const data = await importLocalPaths(request)
         return { ok: true, data }
       } catch (error) {
         return {

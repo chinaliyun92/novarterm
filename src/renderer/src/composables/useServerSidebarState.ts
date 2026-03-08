@@ -1,19 +1,34 @@
 import { computed, reactive, ref } from 'vue'
+import { useI18n } from './useI18n'
 import type {
   CreateServerInput,
   ServerRecord,
   ServerResult,
   UpdateServerInput,
   SSHConnectionSnapshot,
+  SSHConnectionState,
 } from '../types/server'
 import type { ServerSSHActionData, ServersListData } from '../../../shared/types/server'
-import { CONNECTION_STATE_LABELS as connectionStateLabels } from '../types/server'
 
 const DISCONNECTED_SNAPSHOT: SSHConnectionSnapshot = {
   state: 'disconnected',
   reconnectAttempt: 0,
 }
 const ACTIVE_SESSION_STATUS_REFRESH_INTERVAL_MS = 4_000
+const i18n = useI18n()
+
+const CONNECTION_STATE_LABEL_KEYS: Record<SSHConnectionState, string> = {
+  disconnected: 'server.sidebar.state.disconnected',
+  connecting: 'server.sidebar.state.connecting',
+  connected: 'server.sidebar.state.connected',
+  disconnecting: 'server.sidebar.state.disconnecting',
+  reconnecting: 'server.sidebar.state.reconnecting',
+  failed: 'server.sidebar.state.failed',
+}
+
+function t(key: string, params?: Record<string, string | number>): string {
+  return i18n.t(key, params)
+}
 
 function toErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -50,7 +65,7 @@ function resolveElectronApi(): Partial<ElectronApi> | null {
 function getServerApi(): ServerApi {
   const serverApi = resolveElectronApi()?.server
   if (!serverApi) {
-    throw new Error('桌面桥接未就绪：electronAPI.server 不可用，请重启应用。')
+    throw new Error(t('server.sidebar.error.serverApiUnavailable'))
   }
   return serverApi
 }
@@ -58,7 +73,7 @@ function getServerApi(): ServerApi {
 function getSshApi(): SshApi {
   const sshApi = resolveElectronApi()?.ssh
   if (!sshApi) {
-    throw new Error('桌面桥接未就绪：electronAPI.ssh 不可用，请重启应用。')
+    throw new Error(t('server.sidebar.error.sshApiUnavailable'))
   }
   return sshApi
 }
@@ -91,7 +106,6 @@ function createServerSidebarState() {
   const lastError = ref<string | null>(null)
 
   const searchKeyword = ref('')
-  const favoritesOnly = ref(false)
   const selectedServerId = ref<number | null>(null)
 
   const sessionSnapshots = reactive<Record<string, SSHConnectionSnapshot>>({})
@@ -113,10 +127,6 @@ function createServerSidebarState() {
   const visibleServers = computed<ServerRecord[]>(() => {
     const keyword = searchKeyword.value.trim().toLowerCase()
     const filtered = servers.value.filter((server) => {
-      if (favoritesOnly.value && !server.isFavorite) {
-        return false
-      }
-
       if (!keyword) {
         return true
       }
@@ -127,10 +137,6 @@ function createServerSidebarState() {
     })
 
     filtered.sort((left: ServerRecord, right: ServerRecord) => {
-      if (left.isFavorite !== right.isFavorite) {
-        return left.isFavorite ? -1 : 1
-      }
-
       const byName = left.name.localeCompare(right.name)
       if (byName !== 0) {
         return byName
@@ -154,7 +160,7 @@ function createServerSidebarState() {
   }
 
   async function loadServers(): Promise<void> {
-    const data = unwrapResult(await getServerApi().list(), '加载服务器失败')
+    const data = unwrapResult(await getServerApi().list(), t('server.sidebar.error.loadServersFailed'))
     servers.value = data.servers
     ensureSelectedServer()
   }
@@ -167,7 +173,7 @@ function createServerSidebarState() {
       await loadServers()
       initialized.value = true
     } catch (error) {
-      lastError.value = toErrorMessage(error, '加载服务器数据失败')
+      lastError.value = toErrorMessage(error, t('server.sidebar.error.loadServerDataFailed'))
       throw error
     } finally {
       loading.value = false
@@ -182,27 +188,23 @@ function createServerSidebarState() {
     await load()
   }
 
-  async function createServer(input: CreateServerInput): Promise<void> {
+  async function createServer(input: CreateServerInput): Promise<ServerRecord> {
     await ensureLoaded()
-    unwrapResult(await getServerApi().create(input), '创建服务器失败')
+    const created = unwrapResult(await getServerApi().create(input), t('server.sidebar.error.createServerFailed'))
     await loadServers()
+    return created
   }
 
-  async function updateServer(serverId: number, input: UpdateServerInput): Promise<void> {
+  async function updateServer(serverId: number, input: UpdateServerInput): Promise<ServerRecord> {
     await ensureLoaded()
-    unwrapResult(await getServerApi().update(serverId, input), '更新服务器失败')
+    const updated = unwrapResult(await getServerApi().update(serverId, input), t('server.sidebar.error.updateServerFailed'))
     await loadServers()
+    return updated
   }
 
   async function deleteServer(serverId: number): Promise<void> {
     await ensureLoaded()
-    unwrapResult(await getServerApi().delete(serverId), '删除服务器失败')
-    await loadServers()
-  }
-
-  async function setServerFavorite(serverId: number, isFavorite: boolean): Promise<void> {
-    await ensureLoaded()
-    unwrapResult(await getServerApi().favorite(serverId, isFavorite), '更新收藏状态失败')
+    unwrapResult(await getServerApi().delete(serverId), t('server.sidebar.error.deleteServerFailed'))
     await loadServers()
   }
 
@@ -241,7 +243,7 @@ function createServerSidebarState() {
 
   function getSessionStateLabel(sessionId: string | null): string {
     const state = getSessionSnapshot(sessionId).state
-    return connectionStateLabels[state]
+    return t(CONNECTION_STATE_LABEL_KEYS[state])
   }
 
   async function probeSessionStatusLatency(sessionId: string | null): Promise<number | null> {
@@ -292,14 +294,14 @@ function createServerSidebarState() {
     try {
       const data = unwrapResult(
         await getServerApi().connect(serverId, sessionId),
-        '连接服务器失败',
+        t('server.sidebar.error.connectFailed'),
       )
 
       sessionServerBindings[sessionId] = data.serverId
       sessionSnapshots[sessionId] = normalizeSnapshot(data.snapshot)
       await loadServers()
     } catch (error) {
-      const message = toErrorMessage(error, '连接服务器失败')
+      const message = toErrorMessage(error, t('server.sidebar.error.connectFailed'))
       sessionSnapshots[sessionId] = {
         state: 'failed',
         reconnectAttempt: 0,
@@ -317,7 +319,7 @@ function createServerSidebarState() {
   async function disconnectSession(sessionId: string): Promise<void> {
     const serverId = resolveServerIdForSession(sessionId, { allowSelectedFallback: false })
     if (!serverId) {
-      throw new Error('未找到当前会话绑定的服务器')
+      throw new Error(t('server.sidebar.error.noBoundServerForSession'))
     }
 
     pendingSessions[sessionId] = true
@@ -329,14 +331,14 @@ function createServerSidebarState() {
     try {
       const data = unwrapResult(
         await getServerApi().disconnect(serverId, sessionId),
-        '断开连接失败',
+        t('server.sidebar.error.disconnectFailed'),
       )
       applySessionStatus(sessionId, data)
       if (data.snapshot.state === 'disconnected') {
         delete sessionServerBindings[sessionId]
       }
     } catch (error) {
-      const message = toErrorMessage(error, '断开连接失败')
+      const message = toErrorMessage(error, t('server.sidebar.error.disconnectFailed'))
       sessionSnapshots[sessionId] = {
         state: 'failed',
         reconnectAttempt: 0,
@@ -354,7 +356,7 @@ function createServerSidebarState() {
   async function reconnectSession(sessionId: string): Promise<void> {
     const serverId = resolveServerIdForSession(sessionId, { allowSelectedFallback: false })
     if (!serverId) {
-      throw new Error('未找到当前会话绑定的服务器')
+      throw new Error(t('server.sidebar.error.noBoundServerForSession'))
     }
 
     pendingSessions[sessionId] = true
@@ -366,12 +368,12 @@ function createServerSidebarState() {
     try {
       const data = unwrapResult(
         await getServerApi().reconnect(serverId, sessionId),
-        '重连失败',
+        t('server.sidebar.error.reconnectFailed'),
       )
       applySessionStatus(sessionId, data)
       await loadServers()
     } catch (error) {
-      const message = toErrorMessage(error, '重连失败')
+      const message = toErrorMessage(error, t('server.sidebar.error.reconnectFailed'))
       sessionSnapshots[sessionId] = {
         state: 'failed',
         reconnectAttempt: 0,
@@ -396,11 +398,11 @@ function createServerSidebarState() {
     try {
       const data = unwrapResult(
         await getServerApi().status(serverId, sessionId),
-        '读取连接状态失败',
+        t('server.sidebar.error.readStatusFailed'),
       )
       applySessionStatus(sessionId, data)
     } catch (error) {
-      const message = toErrorMessage(error, '读取连接状态失败')
+      const message = toErrorMessage(error, t('server.sidebar.error.readStatusFailed'))
       sessionSnapshots[sessionId] = {
         state: 'failed',
         reconnectAttempt: 0,
@@ -484,7 +486,7 @@ function createServerSidebarState() {
     try {
       unwrapResult(
         await getServerApi().recordDirectory(request),
-        '记录最近目录失败',
+        t('server.sidebar.error.recordRecentDirectoryFailed'),
       )
     } catch {
       // Directory history persistence is best-effort and should not block UI actions.
@@ -498,7 +500,6 @@ function createServerSidebarState() {
     initialized,
     lastError,
     searchKeyword,
-    favoritesOnly,
     selectedServerId,
     selectedServer,
     ensureLoaded,
@@ -506,7 +507,6 @@ function createServerSidebarState() {
     createServer,
     updateServer,
     deleteServer,
-    setServerFavorite,
     selectServer,
     getSessionSnapshot,
     getSessionBoundServer,

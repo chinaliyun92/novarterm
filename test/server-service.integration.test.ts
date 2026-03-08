@@ -42,7 +42,6 @@ function createHarness(options: IntegrationHarnessOptions = {}): IntegrationHarn
     privateKeyPath: null,
     passphrase: null,
     defaultDirectory: null,
-    isFavorite: false,
     lastConnectedAt: null,
   })
 
@@ -124,7 +123,6 @@ function createInMemoryRepositories(): InMemoryRepositories {
           privateKeyPath: input.privateKeyPath ?? null,
           passphrase: input.passphrase ?? null,
           defaultDirectory: input.defaultDirectory ?? null,
-          isFavorite: input.isFavorite ?? false,
           lastConnectedAt: input.lastConnectedAt ?? null,
           createdAt: now(),
           updatedAt: now(),

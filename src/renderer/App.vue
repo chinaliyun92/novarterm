@@ -24,7 +24,10 @@ const SIDEBAR_MIN_WIDTH = 240
 const SIDEBAR_MAX_WIDTH = 560
 const MIN_WORKSPACE_WIDTH = 420
 const FILE_PANE_NAVIGATE_UP_EVENT = 'iterm:file-pane:navigate-up'
+const OPEN_SETTINGS_EVENT = 'novarterm:open-settings'
 const FIRST_LAUNCH_SHORTCUTS_GUIDE_KEY = 'novarterm.shortcuts-guide.shown.v1'
+
+type SettingsTab = 'general' | 'servers' | 'triggers' | 'ai'
 
 const currentLatencyMs = ref<number | null>(null)
 const latencyWindow = ref<number[]>([])
@@ -88,7 +91,7 @@ const uiCssVars = computed<Record<string, string>>(() => ({
 const sidebarWidth = ref(SIDEBAR_DEFAULT_WIDTH)
 const sidebarVisible = ref(false)
 const settingsDialogOpen = ref(false)
-const settingsDialogInitialTab = ref<'general' | 'servers' | 'triggers'>('general')
+const settingsDialogInitialTab = ref<SettingsTab>('general')
 const viewportWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth)
 const isSidebarResizing = ref(false)
 const isSidebarResizeEnabled = computed(() => sidebarVisible.value && viewportWidth.value > 1200)
@@ -164,6 +167,7 @@ const connectionNow = ref(Date.now())
 let removeSidebarResizeListeners: (() => void) | null = null
 let removeWindowResizeListener: (() => void) | null = null
 let removeSidebarShortcutListener: (() => void) | null = null
+let removeOpenSettingsEventListener: (() => void) | null = null
 
 function clampSidebarWidth(nextWidth: number): number {
   if (!Number.isFinite(nextWidth)) {
@@ -178,29 +182,6 @@ function clampSidebarWidth(nextWidth: number): number {
 
 function applySidebarWidth(nextWidth: number): void {
   sidebarWidth.value = clampSidebarWidth(nextWidth)
-}
-
-function toggleSidebarVisibility(): void {
-  sidebarVisible.value = !sidebarVisible.value
-  if (!sidebarVisible.value) {
-    stopSidebarResize()
-  }
-}
-
-function isToggleSidebarShortcut(event: KeyboardEvent): boolean {
-  if (event.defaultPrevented || event.repeat) {
-    return false
-  }
-
-  if (event.altKey || event.shiftKey) {
-    return false
-  }
-
-  if (!event.metaKey || event.ctrlKey) {
-    return false
-  }
-
-  return event.key.toLowerCase() === 'b'
 }
 
 function isCloseWorkspaceShortcut(event: KeyboardEvent): boolean {
@@ -239,9 +220,16 @@ function isOpenSettingsShortcut(event: KeyboardEvent): boolean {
   return event.key === ','
 }
 
-function openSettingsDialog(tab: 'general' | 'servers' | 'triggers' = 'general'): void {
+function openSettingsDialog(tab: SettingsTab = 'general'): void {
   settingsDialogInitialTab.value = tab
   settingsDialogOpen.value = true
+}
+
+function normalizeSettingsTab(raw: unknown): SettingsTab {
+  if (raw === 'general' || raw === 'servers' || raw === 'triggers' || raw === 'ai') {
+    return raw
+  }
+  return 'general'
 }
 
 function shouldShowShortcutsGuideOnFirstLaunch(): boolean {
@@ -805,24 +793,26 @@ onMounted(() => {
       return
     }
 
-    if (!isToggleSidebarShortcut(event)) {
-      const tabIndex = resolveTabSwitchShortcutIndex(event)
-      if (tabIndex === null || !switchSessionByShortcut(tabIndex)) {
-        return
-      }
-
-      event.preventDefault()
-      event.stopPropagation()
+    const tabIndex = resolveTabSwitchShortcutIndex(event)
+    if (tabIndex === null || !switchSessionByShortcut(tabIndex)) {
       return
     }
 
     event.preventDefault()
     event.stopPropagation()
-    toggleSidebarVisibility()
   }
   window.addEventListener('keydown', sidebarShortcutHandler, true)
   removeSidebarShortcutListener = () => {
     window.removeEventListener('keydown', sidebarShortcutHandler, true)
+  }
+
+  const openSettingsEventHandler = (event: Event) => {
+    const detail = (event as CustomEvent<{ tab?: SettingsTab } | undefined>).detail
+    openSettingsDialog(normalizeSettingsTab(detail?.tab))
+  }
+  window.addEventListener(OPEN_SETTINGS_EVENT, openSettingsEventHandler as EventListener)
+  removeOpenSettingsEventListener = () => {
+    window.removeEventListener(OPEN_SETTINGS_EVENT, openSettingsEventHandler as EventListener)
   }
 
   if (shouldShowShortcutsGuideOnFirstLaunch()) {
@@ -837,6 +827,8 @@ onBeforeUnmount(() => {
   stopSidebarResize()
   removeSidebarShortcutListener?.()
   removeSidebarShortcutListener = null
+  removeOpenSettingsEventListener?.()
+  removeOpenSettingsEventListener = null
   removeWindowResizeListener?.()
   removeWindowResizeListener = null
 })

@@ -1,4 +1,9 @@
-import type { SftpListItem, SSHResult } from '../../../shared/types/ssh'
+import type {
+  SftpExtractZipRequest,
+  SftpExtractZipResponse,
+  SftpListItem,
+  SSHResult,
+} from '../../../shared/types/ssh'
 
 export type RemoteFileEntry = SftpListItem
 export type RemoteFileType = RemoteFileEntry['type']
@@ -56,6 +61,10 @@ export interface SftpWriteTextRequest {
 
 export interface SftpWithWriteTextApi {
   writeText?: (request: SftpWriteTextRequest) => Promise<SSHResult<void>>
+}
+
+export interface SftpWithExtractZipApi {
+  extractZip?: (request: SftpExtractZipRequest) => Promise<SSHResult<SftpExtractZipResponse>>
 }
 
 export const ROOT_REMOTE_PATH = '/'
@@ -162,6 +171,18 @@ export function buildRemoteBreadcrumbs(path: string): RemoteBreadcrumbItem[] {
 
 export function isDirectoryEntry(entry: RemoteFileEntry): boolean {
   return entry.type === 'directory'
+}
+
+export function isZipFileName(name: string): boolean {
+  return /\.zip$/i.test(name.trim())
+}
+
+export function toRemoteZipExtractTargetPath(zipPath: string): string {
+  const normalizedZipPath = normalizeRemotePath(zipPath)
+  const basename = getRemoteBasename(normalizedZipPath)
+  const targetName = basename.replace(/\.zip$/i, '').trim() || 'archive'
+  const parentPath = getRemoteParentPath(normalizedZipPath) ?? ROOT_REMOTE_PATH
+  return joinRemotePath(parentPath, targetName)
 }
 
 export function sortRemoteEntries(entries: RemoteFileEntry[]): RemoteFileEntry[] {

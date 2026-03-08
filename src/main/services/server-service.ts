@@ -13,7 +13,6 @@ import type {
   ServerErrorPayload,
   ServerSSHActionData,
   ServerSessionRequest,
-  ToggleServerFavoriteRequest,
 } from '../../shared/types/server';
 import type { SSHAuth, SSHConnectionConfig } from '../../shared/types/ssh';
 import type { RepositoryRegistry } from '../repositories';
@@ -146,13 +145,8 @@ export class ServerService {
 
   public searchServers(request: SearchServersRequest): Server[] {
     const keyword = request.keyword?.trim().toLowerCase() ?? '';
-    const { isFavorite } = request;
 
     return this.repositories.servers.findAll().filter((server) => {
-      if (isFavorite !== undefined && server.isFavorite !== isFavorite) {
-        return false;
-      }
-
       if (!keyword) {
         return true;
       }
@@ -166,18 +160,6 @@ export class ServerService {
 
       return haystacks.some((value) => value.toLowerCase().includes(keyword));
     });
-  }
-
-  public toggleFavorite(request: ToggleServerFavoriteRequest): Server {
-    const server = this.requireServer(request.serverId);
-    const nextFavorite = request.isFavorite ?? !server.isFavorite;
-    const updated = this.repositories.servers.update(server.id, { isFavorite: nextFavorite });
-
-    if (!updated) {
-      throw new ServerServiceError('not_found', `Server ${request.serverId} not found`);
-    }
-
-    return updated;
   }
 
   public async connect(request: ServerSessionRequest): Promise<ServerConnectData> {

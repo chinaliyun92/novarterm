@@ -133,6 +133,12 @@ interface TerminalDebugHintTokenEntry {
   expiresAt: number
 }
 
+interface TerminalInlineAICommandLinkEntry {
+  sessionId: string
+  command: string
+  expiresAt: number
+}
+
 interface RendererShellApi {
   openExternal: (url: string) => Promise<unknown>
 }
@@ -204,6 +210,9 @@ const TERMINAL_DEBUG_HINT_COMMAND_MAX_CHARS_FOR_AI = 600
 const TERMINAL_DEBUG_HINT_SHELL_HISTORY_MAX_ENTRIES = 20
 const TERMINAL_DEBUG_HINT_SHELL_HISTORY_CONTEXT_RECENT_ENTRIES = 5
 const TERMINAL_DEBUG_HINT_SHELL_HISTORY_ENTRY_OUTPUT_MAX_CHARS_FOR_AI = 1_500
+const TERMINAL_INLINE_AI_COMMAND_LINK_PREFIX = 'https://novarterm.local/ai-cmd/'
+const TERMINAL_INLINE_AI_COMMAND_LINK_TTL_MS = 15 * 60 * 1000
+const TERMINAL_INLINE_AI_COMMAND_TEXT_MAX_CHARS = 600
 const TERMINAL_DEBUG_HINT_PATTERNS: RegExp[] = [
   /\berror:/i,
   /\bfatal:/i,
@@ -257,6 +266,8 @@ const terminalCommandTraceBySession = new Map<string, TerminalCommandTrace>()
 const terminalCommandHistoryBySession = new Map<string, TerminalCommandHistoryEntry[]>()
 const terminalDebugHintPayloadByToken = new Map<string, TerminalDebugHintTokenEntry>()
 const terminalDebugHintConsumedTokenExpiryByToken = new Map<string, number>()
+const terminalInlineAICommandLinkByToken = new Map<string, TerminalInlineAICommandLinkEntry>()
+const terminalInlineAICommandLoadingBySession = new Set<string>()
 const localEchoLineBySession = new Map<string, string>()
 const snapshotPersistTimerBySession = new Map<string, ReturnType<typeof setTimeout>>()
 const historyPersistTimerBySession = new Map<string, ReturnType<typeof setTimeout>>()
@@ -1516,6 +1527,11 @@ function buildAIUserMessageSystemPrompt(): string {
   return `如果用户的意图是想要一条shell命令时，严格返回command内容，不要返回其他内容，不要返回解释，不要返回markdown，不要返回代码块，不要返回任何其他内容。`
 }
 
+function buildAIInlineCommandSystemPrompt(): string {
+  return `用户输入了以 ">" 开头的请求，表示需要一条可直接执行的 shell 命令。
+严格只返回命令本身，不要解释，不要 markdown，不要代码块，不要其他内容。`
+}
+
 function buildAIExplainCommandSystemPrompt(command: string): string {
   return `解释这条shell命令：
 ${command}
@@ -2386,9 +2402,15 @@ function clearTerminalDebugHintPayloadsBySession(sessionId: string): void {
     return
   }
   terminalCommandHistoryBySession.delete(sessionId)
+  terminalInlineAICommandLoadingBySession.delete(sessionId)
   for (const [token, entry] of terminalDebugHintPayloadByToken.entries()) {
     if (entry.payload.sessionId === sessionId) {
       terminalDebugHintPayloadByToken.delete(token)
+    }
+  }
+  for (const [token, entry] of terminalInlineAICommandLinkByToken.entries()) {
+    if (entry.sessionId === sessionId) {
+      terminalInlineAICommandLinkByToken.delete(token)
     }
   }
 }
@@ -2545,6 +2567,195 @@ async function debugErrorWithPayload(payload: TerminalDebugHintPayload): Promise
   })
 }
 
+function clearExpiredTerminalInlineAICommandLinks(now = Date.now()): void {
+  for (const [token, entry] of terminalInlineAICommandLinkByToken.entries()) {
+    if (entry.expiresAt <= now) {
+      terminalInlineAICommandLinkByToken.delete(token)
+    }
+  }
+}
+
+function registerTerminalInlineAICommandLinks(
+  sessionId: string,
+  command: string,
+): {
+  insertUri: string
+  runUri: string
+} {
+  clearExpiredTerminalInlineAICommandLinks()
+  const token = createTerminalDebugHintToken()
+  terminalInlineAICommandLinkByToken.set(token, {
+    sessionId,
+    command,
+    expiresAt: Date.now() + TERMINAL_INLINE_AI_COMMAND_LINK_TTL_MS,
+  })
+  const encodedToken = encodeURIComponent(token)
+  return {
+    insertUri: `${TERMINAL_INLINE_AI_COMMAND_LINK_PREFIX}${encodedToken}/insert`,
+    runUri: `${TERMINAL_INLINE_AI_COMMAND_LINK_PREFIX}${encodedToken}/run`,
+  }
+}
+
+function parseTerminalInlineAICommandUri(uri: string): { token: string; action: 'insert' | 'run' } | null {
+  const trimmed = uri.trim()
+  if (!trimmed.startsWith(TERMINAL_INLINE_AI_COMMAND_LINK_PREFIX)) {
+    return null
+  }
+  const rest = trimmed.slice(TERMINAL_INLINE_AI_COMMAND_LINK_PREFIX.length)
+  const [encodedToken = '', rawAction = ''] = rest.split('/', 2)
+  if (!encodedToken || !rawAction) {
+    return null
+  }
+  const action = rawAction.toLowerCase().replace(/[^a-z]/g, '')
+  if (action !== 'insert' && action !== 'run') {
+    return null
+  }
+  try {
+    const token = decodeURIComponent(encodedToken)
+    if (!token.trim()) {
+      return null
+    }
+    return { token, action }
+  } catch {
+    return null
+  }
+}
+
+function tryExtractInlineAICommandFromReply(content: string): string | null {
+  const parsed = parseAssistantReply(content)
+  const parsedCommand =
+    parsed.role === 'assistant' && parsed.isCommand && typeof parsed.commandText === 'string'
+      ? parsed.commandText.trim()
+      : ''
+  const trimmed = content.trim()
+  const fallbackLine = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && line !== AI_COMMAND_MARKER)
+
+  let command = parsedCommand || fallbackLine || ''
+  command = command.replace(/^`+|`+$/g, '').trim()
+  if (!command) {
+    return null
+  }
+  return command.length > TERMINAL_INLINE_AI_COMMAND_TEXT_MAX_CHARS
+    ? command.slice(0, TERMINAL_INLINE_AI_COMMAND_TEXT_MAX_CHARS)
+    : command
+}
+
+function writeTerminalInlineAILoadingLine(sessionId: string): void {
+  if (!terminal || sessionId !== activeBridgeSessionId) {
+    return
+  }
+  terminal.write(`\r\n${t('terminal.inlineAi.loading')}\r\n`)
+}
+
+function writeTerminalInlineAIResultLine(sessionId: string, command: string): void {
+  if (!terminal || sessionId !== activeBridgeSessionId) {
+    return
+  }
+  const links = registerTerminalInlineAICommandLinks(sessionId, command)
+  const osc8 = (url: string, label: string): string => `\u001b]8;;${url}\u0007${label}\u001b]8;;\u0007`
+  const insert = osc8(links.insertUri, `[${t('terminal.inlineAi.insertAction')}]`)
+  const run = osc8(links.runUri, `[${t('terminal.inlineAi.runAction')}]`)
+  terminal.write(`\r\n${t('terminal.inlineAi.commandLabel')} ${command}\r\n${insert} ${run}\r\n`)
+}
+
+function writeTerminalInlineAIErrorLine(sessionId: string, reason: string): void {
+  if (!terminal || sessionId !== activeBridgeSessionId) {
+    return
+  }
+  terminal.write(`\r\n${t('terminal.inlineAi.error', { reason })}\r\n`)
+}
+
+async function refreshTerminalPromptLine(sessionId: string): Promise<void> {
+  await writeInputToSession(sessionId, '\r', {
+    trackHistory: false,
+    reportUnavailable: false,
+  })
+}
+
+async function runInlineAICommandRequest(sessionId: string, promptText: string): Promise<void> {
+  if (terminalInlineAICommandLoadingBySession.has(sessionId)) {
+    const busyMsg = t('terminal.inlineAi.busy')
+    writeTerminalInlineAIErrorLine(sessionId, busyMsg)
+    globalMessage.info(busyMsg, { replace: true })
+    await refreshTerminalPromptLine(sessionId)
+    return
+  }
+
+  terminalInlineAICommandLoadingBySession.add(sessionId)
+  try {
+    const clearOk = await writeInputToSession(sessionId, '\u0015', {
+      trackHistory: false,
+      reportUnavailable: true,
+    })
+    if (!clearOk) {
+      return
+    }
+
+    writeTerminalInlineAILoadingLine(sessionId)
+    let reply = ''
+    await askAIAndStreamResponseWithMessages(
+      [{ role: 'user', content: promptText }],
+      (chunk) => {
+        reply += chunk
+      },
+      {
+        scenarioSystemPrompt: buildAIInlineCommandSystemPrompt(),
+      },
+    )
+    const command = tryExtractInlineAICommandFromReply(reply)
+    if (!command) {
+      writeTerminalInlineAIErrorLine(sessionId, t('terminal.inlineAi.invalidCommandReply'))
+      await refreshTerminalPromptLine(sessionId)
+      return
+    }
+    writeTerminalInlineAIResultLine(sessionId, command)
+    await refreshTerminalPromptLine(sessionId)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : t('terminal.aiBar.error.default')
+    writeTerminalInlineAIErrorLine(sessionId, reason)
+    await refreshTerminalPromptLine(sessionId)
+  } finally {
+    terminalInlineAICommandLoadingBySession.delete(sessionId)
+  }
+}
+
+async function executeTerminalInlineAIAction(
+  entry: TerminalInlineAICommandLinkEntry,
+  action: 'insert' | 'run',
+): Promise<void> {
+  const payload = action === 'run' ? `${entry.command}\n` : entry.command
+  const written = await writeInputToSession(entry.sessionId, payload, {
+    trackHistory: action === 'run',
+    reportUnavailable: true,
+  })
+  if (!written) {
+    globalMessage.error(t('terminal.session.error.activeUnavailable'), { replace: true })
+  }
+}
+
+function tryHandleTerminalInlineAICommandUri(uri: string): boolean {
+  const parsed = parseTerminalInlineAICommandUri(uri)
+  if (!parsed) {
+    return false
+  }
+  clearExpiredTerminalInlineAICommandLinks()
+  const entry = terminalInlineAICommandLinkByToken.get(parsed.token)
+  if (!entry) {
+    const message = t('terminal.inlineAi.linkExpired')
+    globalMessage.info(message, { replace: true })
+    const currentSession = activeBridgeSessionId ?? terminalDebugHintSessionId.value
+    if (currentSession) {
+      writeTerminalInlineAIErrorLine(currentSession, message)
+    }
+    return true
+  }
+  void executeTerminalInlineAIAction(entry, parsed.action)
+  return true
+}
+
 function getRendererShellApi(): RendererShellApi | undefined {
   const maybeWindow = window as Window & {
     electronAPI?: { shell?: RendererShellApi }
@@ -2566,6 +2777,11 @@ function tryActivateTerminalLink(uri: string, event: MouseEvent, shellApi?: Rend
   const trimmedUri = uri.trim()
   if (!trimmedUri) {
     return false
+  }
+
+  if (trimmedUri.startsWith(TERMINAL_INLINE_AI_COMMAND_LINK_PREFIX)) {
+    tryHandleTerminalInlineAICommandUri(trimmedUri)
+    return true
   }
 
   if (trimmedUri.startsWith(TERMINAL_DEBUG_HINT_LINK_PREFIX)) {
@@ -6990,12 +7206,53 @@ async function writeInputToSession(
   return writeOk
 }
 
+function shouldTriggerInlineAICommandRequest(data: string, pendingLine: string): boolean {
+  if (!data || !pendingLine) {
+    return false
+  }
+  if (!pendingLine.startsWith('>')) {
+    return false
+  }
+  return data.includes('\r') || data.includes('\n')
+}
+
+async function maybeHandleInlineAICommandRequest(sessionId: string, data: string): Promise<boolean> {
+  const pendingLine = getSessionPendingLine(sessionId)
+  if (!shouldTriggerInlineAICommandRequest(data, pendingLine)) {
+    return false
+  }
+  const promptText = pendingLine.slice(1).trim()
+  if (!promptText) {
+    const clearOk = await writeInputToSession(sessionId, '\u0015', {
+      trackHistory: false,
+      reportUnavailable: true,
+    })
+    if (!clearOk) {
+      return true
+    }
+    const message = t('terminal.inlineAi.emptyPrompt')
+    writeTerminalInlineAIErrorLine(sessionId, message)
+    globalMessage.info(message, { replace: true })
+    setSessionPendingLine(sessionId, '')
+    await refreshTerminalPromptLine(sessionId)
+    return true
+  }
+
+  setSessionPendingLine(sessionId, '')
+  void runInlineAICommandRequest(sessionId, promptText)
+  return true
+}
+
 async function sendInputToBridge(data: string): Promise<void> {
   const sessionId = activeBridgeSessionId
   if (!sessionId || !data) {
     if (data && !sessionId) {
       writeTerminalError(t('terminal.session.error.activeUnavailable'))
     }
+    return
+  }
+
+  if (await maybeHandleInlineAICommandRequest(sessionId, data)) {
     return
   }
 

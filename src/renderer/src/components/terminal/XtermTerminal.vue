@@ -109,6 +109,34 @@ interface AIUserDisplayCard {
   sections: AIUserDisplayCardSection[]
 }
 
+interface TerminalCommandTrace {
+  command: string
+  output: string
+  startedAt: number
+  exitCode: number | null
+}
+
+interface TerminalCommandHistoryEntry {
+  command: string
+  output: string
+  exitCode: number | null
+}
+
+interface TerminalDebugHintPayload {
+  sessionId: string
+  context: string
+  command: string
+}
+
+interface TerminalDebugHintTokenEntry {
+  payload: TerminalDebugHintPayload
+  expiresAt: number
+}
+
+interface RendererShellApi {
+  openExternal: (url: string) => Promise<unknown>
+}
+
 type AIModelTarget =
   | {
       id: string
@@ -142,7 +170,6 @@ const AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES = 2
 const AI_PLATFORMS_KEY = 'ai.platforms'
 const AI_SELECTED_MODEL_KEY = 'ai.commandBar.selectedModel'
 const AI_RESPONSE_LANGUAGE_KEY = 'ai.commandBar.responseLanguage'
-const AI_PROXY_BASE_URL_KEY = 'ai.proxy.baseUrl'
 const AI_PROXY_INSTALLATION_ID_KEY = 'ai.proxy.installationId'
 const AI_PROXY_CLIENT_TOKEN_KEY = 'ai.proxy.clientToken'
 const AI_BUILT_IN_MODEL_TARGET_ID = 'built_in_default'
@@ -154,9 +181,29 @@ const AI_RESPONSE_LANGUAGE_DEFAULT: AIResponseLanguage = 'en'
 const OPEN_SETTINGS_EVENT = 'novarterm:open-settings'
 const SHOW_AI_RESPONSE_LANGUAGE_DEBUG = import.meta.env.DEV
 const AI_COMMAND_BAR_DEBUG_LOG_ENABLED = import.meta.env.DEV
-const TERMINAL_DEBUG_HINT_COOLDOWN_MS = 45_000
+const AI_COMMAND_REPLY_HINT_COMMANDS = new Set([
+  'ls', 'cd', 'pwd', 'cp', 'mv', 'rm', 'mkdir', 'rmdir', 'touch', 'cat', 'less', 'head', 'tail',
+  'grep', 'find', 'sed', 'awk', 'xargs', 'sort', 'uniq', 'wc', 'cut', 'tr', 'echo', 'printf',
+  'ssh', 'scp', 'sftp', 'rsync',
+  'git', 'npm', 'npx', 'yarn', 'pnpm', 'node', 'python', 'pip', 'uv', 'go', 'cargo', 'make',
+  'docker', 'docker-compose', 'kubectl', 'pm2',
+  'curl', 'wget', 'tar', 'zip', 'unzip', 'chmod', 'chown', 'lsof', 'netstat', 'ps', 'kill',
+  'brew', 'apt', 'apt-get', 'systemctl', 'service',
+  'bash', 'sh', 'zsh', 'fish',
+])
 const TERMINAL_DEBUG_CONTEXT_MAX_LINES = 30
 const TERMINAL_DEBUG_CONTEXT_MAX_CHARS = 10_000
+const TERMINAL_COMMAND_OUTPUT_CAPTURE_MAX_CHARS = 20_000
+const TERMINAL_DEBUG_HINT_LINK_PREFIX = 'https://novarterm.local/ai-hint/'
+const TERMINAL_DEBUG_HINT_LINK_PAYLOAD_MAX = 80
+const TERMINAL_DEBUG_HINT_LINK_TTL_MS = 10 * 60 * 1000
+const TERMINAL_DEBUG_HINT_LINK_CONSUMED_TTL_MS = 10 * 60 * 1000
+const TERMINAL_DEBUG_HINT_CONTEXT_MAX_LINES_FOR_AI = 120
+const TERMINAL_DEBUG_HINT_CONTEXT_MAX_CHARS_FOR_AI = 12_000
+const TERMINAL_DEBUG_HINT_COMMAND_MAX_CHARS_FOR_AI = 600
+const TERMINAL_DEBUG_HINT_SHELL_HISTORY_MAX_ENTRIES = 20
+const TERMINAL_DEBUG_HINT_SHELL_HISTORY_CONTEXT_RECENT_ENTRIES = 5
+const TERMINAL_DEBUG_HINT_SHELL_HISTORY_ENTRY_OUTPUT_MAX_CHARS_FOR_AI = 1_500
 const TERMINAL_DEBUG_HINT_PATTERNS: RegExp[] = [
   /\berror:/i,
   /\bfatal:/i,
@@ -189,6 +236,8 @@ const aiResponseLanguage = ref<AIResponseLanguage>(AI_RESPONSE_LANGUAGE_DEFAULT)
 const terminalDebugHintVisible = ref(false)
 const terminalDebugHintSessionId = ref('')
 const terminalDebugHintContext = ref('')
+const terminalDebugHintCommand = ref('')
+const terminalDebugHintExitCode = ref<number | null>(null)
 let aiCommandBarResizeCleanup: (() => void) | null = null
 let aiCommandBarRequestSequence = 0
 let delayedCwdRefreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -204,6 +253,10 @@ const LOCAL_HISTORY_PERSIST_DELAY_MS = 1_200
 const sessionCommandHistory = new Map<string, string[]>()
 const sessionPendingInput = new Map<string, string>()
 const sessionPromptBuffer = new Map<string, string>()
+const terminalCommandTraceBySession = new Map<string, TerminalCommandTrace>()
+const terminalCommandHistoryBySession = new Map<string, TerminalCommandHistoryEntry[]>()
+const terminalDebugHintPayloadByToken = new Map<string, TerminalDebugHintTokenEntry>()
+const terminalDebugHintConsumedTokenExpiryByToken = new Map<string, number>()
 const localEchoLineBySession = new Map<string, string>()
 const snapshotPersistTimerBySession = new Map<string, ReturnType<typeof setTimeout>>()
 const historyPersistTimerBySession = new Map<string, ReturnType<typeof setTimeout>>()
@@ -240,7 +293,6 @@ const remoteHostStackBySession = new Map<string, string[]>()
 const triggerMatchTailBySession = new Map<string, string>()
 const triggerRuleArmedBySession = new Map<string, boolean>()
 const triggerLastFiredAtBySessionRule = new Map<string, number>()
-const lastTerminalDebugHintAtBySession = new Map<string, number>()
 const TRIGGER_MATCH_TAIL_MAX = 1024
 const TRIGGER_MATCH_MIN_TAIL = 24
 const TRIGGER_FIRE_COOLDOWN_MS = 500
@@ -1003,16 +1055,8 @@ async function maybeLockAIResponseLanguageFromUserInput(text: string): Promise<v
   await setAISettingValue(AI_RESPONSE_LANGUAGE_KEY, detected)
 }
 
-function normalizeProxyBaseUrl(input: string | null): string {
-  if (!input || !input.trim()) {
-    return AI_PROXY_BASE_URL_DEFAULT
-  }
-  return input.trim().replace(/\/$/, '')
-}
-
-async function resolveAIProxyBaseUrl(): Promise<string> {
-  const configured = await getAISettingValue(AI_PROXY_BASE_URL_KEY)
-  return normalizeProxyBaseUrl(configured)
+function resolveAIProxyBaseUrl(): string {
+  return AI_PROXY_BASE_URL_DEFAULT
 }
 
 function getBuiltInModelTarget(): AIModelTarget {
@@ -1368,7 +1412,55 @@ function parseAssistantReply(content: string): AIChatMessage {
       commandText: commandText || undefined,
     }
   }
+  const plainCommand = tryParsePlainCommandReply(trimmed)
+  if (plainCommand) {
+    return {
+      role: 'assistant',
+      content: plainCommand,
+      isCommand: true,
+      commandText: plainCommand,
+    }
+  }
   return { role: 'assistant', content }
+}
+
+function tryParsePlainCommandReply(trimmedContent: string): string | null {
+  const normalized = trimmedContent.trim()
+  if (!normalized || normalized.length > 360) {
+    return null
+  }
+  if (normalized.includes('\n') || normalized.includes('\r')) {
+    return null
+  }
+  if (normalized.startsWith('```') || normalized.startsWith('`')) {
+    return null
+  }
+  if (/^[*-]\s/.test(normalized) || /^\d+\.\s/.test(normalized)) {
+    return null
+  }
+  if (/[。！？；，]/.test(normalized)) {
+    return null
+  }
+  const tokens = tokenizeShellCommand(normalized).filter((token) => !isShellCommandSeparatorToken(token))
+  if (!tokens.length) {
+    return null
+  }
+  const first = tokens[0]?.toLowerCase() ?? ''
+  if (!first) {
+    return null
+  }
+  if (
+    first.startsWith('./') ||
+    first.startsWith('/') ||
+    first.startsWith('~/') ||
+    first.startsWith('../')
+  ) {
+    return normalized
+  }
+  if (!AI_COMMAND_REPLY_HINT_COMMANDS.has(first)) {
+    return null
+  }
+  return normalized
 }
 
 function summarizeAIMessagePayloadForLog(
@@ -1413,7 +1505,75 @@ class AIRequestError extends Error {
   }
 }
 
-async function sendAIMessagesAndStream(messagesForApi?: AIChatMessage[]): Promise<void> {
+function buildAIGlobalSystemPrompt(responseLanguageLabel: string): string {
+  return `你是一个面向终端用户的助手。
+始终使用${responseLanguageLabel}回复。
+命令和代码必须保持不变。
+解释要简洁。`
+}
+
+function buildAIUserMessageSystemPrompt(): string {
+  return `如果用户的意图是想要一条shell命令时，严格返回command内容，不要返回其他内容，不要返回解释，不要返回markdown，不要返回代码块，不要返回任何其他内容。`
+}
+
+function buildAIExplainCommandSystemPrompt(command: string): string {
+  return `解释这条shell命令：
+${command}
+
+输出要求：
+说明该命令的作用，每个关键部分/参数的作用，潜在的风险，并提供一个更安全的示例（如果适用）。`
+}
+
+function buildAIExplainSelectionSystemPrompt(selection: string): string {
+  return `解释这段已选中的终端文本：
+${selection}
+
+输出要求：
+1) 如果文本是 shell 命令：解释用途、关键参数、风险，并在适用时给出一个更安全的示例。
+2) 如果文本看起来像日志/错误/输出：总结其含义、可能原因，并给出下一步排查建议。`
+}
+
+function buildAIExplainErrorSystemPrompt(context: string, command: string, shellHistory: string): string {
+  return `解释这次命令失败信息：
+${context}
+
+相关命令：
+${command || '(unknown)'}
+
+最近 shell 历史（最近 5 条）：
+${shellHistory}
+
+输出要求：
+1) 先用简洁语言解释这个报错是什么意思。
+2) 说明最可能的原因（最多 3 条）。
+3) 给出最小可执行修复步骤。`
+}
+
+function buildAIDebugSystemPrompt(context: string, latestCommand: string, shellHistory: string): string {
+  return `调试这段终端输出：
+${context}
+
+最后执行的命令（如果有）：
+${latestCommand || '(unknown)'}
+
+最近 shell 历史（最近 5 条）：
+${shellHistory}
+
+输出要求：
+1) 按可能性高低给出最可能的根因（排序）。
+2) 提供具体的排查步骤和可执行命令。
+3) 对高风险命令做标注，并在可能时给出更安全替代方案。
+4) 如果信息不足，明确列出下一步还需要的命令/输出。`
+}
+
+interface AIRequestPromptOptions {
+  scenarioSystemPrompt?: string
+}
+
+async function sendAIMessagesAndStream(
+  messagesForApi?: AIChatMessage[],
+  options?: AIRequestPromptOptions,
+): Promise<void> {
   const toSend = messagesForApi ?? aiCommandBarMessages.value
   const requestId = ++aiCommandBarRequestSequence
   const payloadSummary = summarizeAIMessagePayloadForLog(
@@ -1432,7 +1592,10 @@ async function sendAIMessagesAndStream(messagesForApi?: AIChatMessage[]): Promis
   try {
     await askAIAndStreamResponseWithMessages(toSend, (chunk) => {
       aiCommandBarStreamingReply.value += chunk
-    }, requestId)
+    }, {
+      requestId,
+      scenarioSystemPrompt: options?.scenarioSystemPrompt,
+    })
     const assistantMsg = parseAssistantReply(aiCommandBarStreamingReply.value)
     aiCommandBarMessages.value = [...aiCommandBarMessages.value, assistantMsg]
     aiCommandBarStreamingReply.value = ''
@@ -1487,7 +1650,9 @@ async function submitAICommandBar(): Promise<void> {
   const recentContext = aiCommandBarMessages.value.slice(-AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES)
   aiCommandBarMessages.value = [...aiCommandBarMessages.value, userMessage]
   aiCommandBarInput.value = ''
-  await sendAIMessagesAndStream([...recentContext, userMessage])
+  await sendAIMessagesAndStream([...recentContext, userMessage], {
+    scenarioSystemPrompt: buildAIUserMessageSystemPrompt(),
+  })
 }
 
 function getAICurrentSessionId(): string | null {
@@ -1522,17 +1687,11 @@ function onAICmdExpand(command: string): void {
     role: 'user',
     content: command,
   }
-  const explainApiMessage: AIChatMessage = {
-    role: 'user',
-    content: `Explain this shell command:
-${command}
-
-Output requirements:
-1) Explain what the command does, what each key part/argument means, potential risks, and provide one safer example if applicable.`,
-  }
   const recentContext = aiCommandBarMessages.value.slice(-AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES)
   aiCommandBarMessages.value = [...aiCommandBarMessages.value, displayMessage]
-  void sendAIMessagesAndStream([...recentContext, explainApiMessage])
+  void sendAIMessagesAndStream([...recentContext, displayMessage], {
+    scenarioSystemPrompt: buildAIExplainCommandSystemPrompt(command),
+  })
 }
 
 async function streamSSEContent(
@@ -1674,7 +1833,7 @@ async function requestBuiltInAIStream(
   messages: Array<{ role: string; content: string }>,
   onChunk: (chunk: string) => void,
 ): Promise<void> {
-  const baseUrl = await resolveAIProxyBaseUrl()
+  const baseUrl = resolveAIProxyBaseUrl()
   let clientToken = await ensureProxyClientToken(baseUrl)
 
   async function postOnce(token: string): Promise<Response> {
@@ -1746,23 +1905,20 @@ async function requestUserCustomAIStream(
 async function askAIAndStreamResponseWithMessages(
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
   onChunk: (chunk: string) => void,
-  requestId?: number,
+  options?: {
+    requestId?: number
+    scenarioSystemPrompt?: string
+  },
 ): Promise<void> {
   const responseLanguage = await resolveAIResponseLanguage()
   const responseLanguageLabel = resolveAIResponseLanguageLabel(responseLanguage)
-  const systemPrompt = `You are a helpful assistant for a terminal user. When the user clearly only needs a single shell command (e.g. "how to list files", "command to do X", "给我一个命令做Y"), reply with exactly two lines:
-Line 1: ${AI_COMMAND_MARKER}
-Line 2: the command only (no explanation, no markdown, no code block).
-Otherwise reply with a full, helpful answer. Do not use ${AI_COMMAND_MARKER} when giving explanations or multi-step instructions.
-
-Rules:
-- Always respond in ${responseLanguageLabel}
-- Commands and code must remain unchanged
-- Keep explanations concise
-- Prefer practical solutions`
+  const systemPrompt = buildAIGlobalSystemPrompt(responseLanguageLabel)
 
   const apiMessages: Array<{ role: string; content: string }> = [
     { role: 'system', content: systemPrompt },
+    ...(options?.scenarioSystemPrompt
+      ? [{ role: 'system', content: options.scenarioSystemPrompt }]
+      : []),
     ...messages.map((m) => ({ role: m.role, content: m.content })),
   ]
   if (aiModelTargets.value.length === 0) {
@@ -1770,7 +1926,7 @@ Rules:
   }
   const selectedTarget = getCurrentAIModelTarget()
   logAICommandBarDebug('api-messages', {
-    requestId: requestId ?? null,
+    requestId: options?.requestId ?? null,
     targetId: selectedTarget.id,
     targetKind: selectedTarget.kind,
     targetModel: selectedTarget.model,
@@ -1954,12 +2110,98 @@ function toTerminalDebugPlainText(data: string): string {
   return stripAnsiEscapeSequences(data).replace(/\r/g, '\n')
 }
 
-function shouldShowTerminalDebugHintForChunk(chunk: string): boolean {
-  const plain = toTerminalDebugPlainText(chunk)
-  if (!plain.trim()) {
-    return false
+function extractExitCodeFromChunk(chunk: string): number | null {
+  const oscPattern = /\x1b\]133;D;(-?\d+)(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/g
+  let oscCode: number | null = null
+  for (const match of chunk.matchAll(oscPattern)) {
+    const parsed = Number.parseInt(match[1] ?? '', 10)
+    if (Number.isFinite(parsed)) {
+      oscCode = parsed
+    }
   }
-  return TERMINAL_DEBUG_HINT_PATTERNS.some((pattern) => pattern.test(plain))
+
+  const plain = toTerminalDebugPlainText(chunk)
+  const plainPattern = /\bexit(?:\s+status|\s+code)?\s*[:=]?\s*(-?\d+)\b/gi
+  let plainCode: number | null = null
+  for (const match of plain.matchAll(plainPattern)) {
+    const parsed = Number.parseInt(match[1] ?? '', 10)
+    if (Number.isFinite(parsed)) {
+      plainCode = parsed
+    }
+  }
+
+  const resolved = plainCode ?? oscCode
+  if (resolved == null) {
+    return null
+  }
+  return resolved
+}
+
+function appendTerminalCommandHistory(sessionId: string, trace: TerminalCommandTrace): void {
+  const command = stripAnsiEscapeSequences(trace.command).replace(/\r/g, ' ').trim()
+  const output = toTerminalDebugPlainText(trace.output).trim()
+  if (!command && !output) {
+    return
+  }
+  const history = terminalCommandHistoryBySession.get(sessionId) ?? []
+  history.push({
+    command,
+    output,
+    exitCode: trace.exitCode,
+  })
+  if (history.length > TERMINAL_DEBUG_HINT_SHELL_HISTORY_MAX_ENTRIES) {
+    history.splice(0, history.length - TERMINAL_DEBUG_HINT_SHELL_HISTORY_MAX_ENTRIES)
+  }
+  terminalCommandHistoryBySession.set(sessionId, history)
+}
+
+function beginTerminalCommandTrace(sessionId: string, command: string): void {
+  terminalCommandTraceBySession.set(sessionId, {
+    command,
+    output: '',
+    startedAt: Date.now(),
+    exitCode: null,
+  })
+  if (terminalDebugHintSessionId.value === sessionId) {
+    dismissTerminalDebugHint()
+  }
+}
+
+function appendTerminalCommandTraceOutput(sessionId: string, chunk: string): void {
+  const trace = terminalCommandTraceBySession.get(sessionId)
+  if (!trace) {
+    return
+  }
+  const plain = toTerminalDebugPlainText(chunk)
+  if (!plain) {
+    return
+  }
+  const next = `${trace.output}${plain}`
+  trace.output =
+    next.length > TERMINAL_COMMAND_OUTPUT_CAPTURE_MAX_CHARS
+      ? next.slice(next.length - TERMINAL_COMMAND_OUTPUT_CAPTURE_MAX_CHARS)
+      : next
+}
+
+function markTerminalCommandTraceExitCode(sessionId: string, code: number): void {
+  const trace = terminalCommandTraceBySession.get(sessionId)
+  if (!trace) {
+    return
+  }
+  trace.exitCode = code
+}
+
+function finalizeTerminalCommandTrace(sessionId: string): void {
+  const trace = terminalCommandTraceBySession.get(sessionId)
+  if (!trace) {
+    return
+  }
+  terminalCommandTraceBySession.delete(sessionId)
+  appendTerminalCommandHistory(sessionId, trace)
+  if (trace.exitCode == null || trace.exitCode === 0) {
+    return
+  }
+  maybeShowTerminalDebugHint(sessionId, trace)
 }
 
 function pickTerminalDebugOutputLine(context: string): string {
@@ -1979,80 +2221,254 @@ function pickTerminalDebugOutputLine(context: string): string {
   return lines[lines.length - 1]
 }
 
-function resolveLatestSessionCommand(sessionId: string): string {
-  const history = sessionCommandHistory.get(sessionId) ?? []
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const command = history[index]?.trim()
-    if (command) {
-      return command
-    }
-  }
-  return ''
+function dismissTerminalDebugHint(): void {
+  terminalDebugHintVisible.value = false
+  terminalDebugHintSessionId.value = ''
+  terminalDebugHintContext.value = ''
+  terminalDebugHintCommand.value = ''
+  terminalDebugHintExitCode.value = null
 }
 
-function buildTerminalDebugContext(sessionId: string, fallbackChunk: string): string {
-  const transcript = sessionCache.getTranscript(sessionId)
-  const source = transcript
-    ? transcript.slice(-TERMINAL_DEBUG_CONTEXT_MAX_CHARS)
-    : fallbackChunk
-  const lines = toTerminalDebugPlainText(source)
+function createTerminalDebugHintToken(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `hint-${Date.now()}-${Math.random().toString(16).slice(2, 12)}`
+}
+
+function redactSensitiveTerminalDebugText(text: string): string {
+  let result = text
+  result = result.replace(/(Authorization:\s*Bearer\s+)[^\s]+/gi, '$1***')
+  result = result.replace(/(Bearer\s+)[A-Za-z0-9._\-]{10,}/g, '$1***')
+  result = result.replace(/\bsk-[A-Za-z0-9]{10,}\b/g, 'sk-***')
+  result = result.replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password)\b\s*[:=]\s*([^\s]+)/gi, '$1=***')
+  return result
+}
+
+function normalizeTerminalDebugPayload(payload: TerminalDebugHintPayload): TerminalDebugHintPayload {
+  const sessionId = payload.sessionId.trim()
+  const commandBase = redactSensitiveTerminalDebugText(
+    stripAnsiEscapeSequences(payload.command).replace(/\r/g, ' ').trim(),
+  )
+  const command = commandBase.length > TERMINAL_DEBUG_HINT_COMMAND_MAX_CHARS_FOR_AI
+    ? commandBase.slice(0, TERMINAL_DEBUG_HINT_COMMAND_MAX_CHARS_FOR_AI)
+    : commandBase
+
+  const contextText = redactSensitiveTerminalDebugText(toTerminalDebugPlainText(payload.context))
+  const contextLines = contextText
     .split('\n')
     .map((line) => line.trimEnd())
     .filter((line) => line.trim().length > 0)
-  if (!lines.length) {
-    return ''
+    .slice(-TERMINAL_DEBUG_HINT_CONTEXT_MAX_LINES_FOR_AI)
+  const contextJoined = contextLines.join('\n')
+  const context = contextJoined.length > TERMINAL_DEBUG_HINT_CONTEXT_MAX_CHARS_FOR_AI
+    ? contextJoined.slice(contextJoined.length - TERMINAL_DEBUG_HINT_CONTEXT_MAX_CHARS_FOR_AI)
+    : contextJoined
+
+  return {
+    sessionId,
+    command,
+    context,
   }
-  return lines.slice(-TERMINAL_DEBUG_CONTEXT_MAX_LINES).join('\n')
 }
 
-function dismissTerminalDebugHint(): void {
-  terminalDebugHintVisible.value = false
+function buildTerminalShellHistoryContextForAI(sessionId: string): string {
+  const history = terminalCommandHistoryBySession.get(sessionId) ?? []
+  if (!history.length) {
+    return '(none)'
+  }
+
+  const picked = history.slice(-TERMINAL_DEBUG_HINT_SHELL_HISTORY_CONTEXT_RECENT_ENTRIES)
+  return picked
+    .map((entry, index) => {
+      const commandBase = redactSensitiveTerminalDebugText(entry.command || '(unknown)')
+      const command = commandBase.length > TERMINAL_DEBUG_HINT_COMMAND_MAX_CHARS_FOR_AI
+        ? commandBase.slice(0, TERMINAL_DEBUG_HINT_COMMAND_MAX_CHARS_FOR_AI)
+        : commandBase
+      const outputBase = redactSensitiveTerminalDebugText(entry.output || '')
+      const output = outputBase.length > TERMINAL_DEBUG_HINT_SHELL_HISTORY_ENTRY_OUTPUT_MAX_CHARS_FOR_AI
+        ? outputBase.slice(outputBase.length - TERMINAL_DEBUG_HINT_SHELL_HISTORY_ENTRY_OUTPUT_MAX_CHARS_FOR_AI)
+        : outputBase
+      const exitCode = entry.exitCode == null ? 'unknown' : String(entry.exitCode)
+      return [
+        `#${index + 1}`,
+        `Command: ${command || '(unknown)'}`,
+        `Exit Code: ${exitCode}`,
+        'Output:',
+        output || '(no output)',
+      ].join('\n')
+    })
+    .join('\n\n')
 }
 
-function maybeShowTerminalDebugHint(sessionId: string, chunk: string): void {
-  if (!shouldShowTerminalDebugHintForChunk(chunk)) {
+function writeTerminalDebugHintStatusLine(sessionId: string, messageKey: string): void {
+  if (!terminal || sessionId !== activeBridgeSessionId) {
+    return
+  }
+  terminal.write(`\r\n↳ ${t(messageKey)}\r\n`)
+}
+
+function clearExpiredTerminalDebugHintTokens(now = Date.now()): void {
+  for (const [token, entry] of terminalDebugHintPayloadByToken.entries()) {
+    if (entry.expiresAt <= now) {
+      terminalDebugHintPayloadByToken.delete(token)
+    }
+  }
+  for (const [token, expiresAt] of terminalDebugHintConsumedTokenExpiryByToken.entries()) {
+    if (expiresAt <= now) {
+      terminalDebugHintConsumedTokenExpiryByToken.delete(token)
+    }
+  }
+}
+
+function trimTerminalDebugHintPayloadCache(): void {
+  clearExpiredTerminalDebugHintTokens()
+  while (terminalDebugHintPayloadByToken.size > TERMINAL_DEBUG_HINT_LINK_PAYLOAD_MAX) {
+    const oldest = terminalDebugHintPayloadByToken.keys().next().value as string | undefined
+    if (!oldest) {
+      break
+    }
+    terminalDebugHintPayloadByToken.delete(oldest)
+  }
+}
+
+function registerTerminalDebugHintPayload(payload: TerminalDebugHintPayload): {
+  explainUri: string
+  debugUri: string
+} {
+  const normalizedPayload = normalizeTerminalDebugPayload(payload)
+  if (!normalizedPayload.sessionId || !normalizedPayload.command || !normalizedPayload.context) {
+    return {
+      explainUri: `${TERMINAL_DEBUG_HINT_LINK_PREFIX}invalid/explain`,
+      debugUri: `${TERMINAL_DEBUG_HINT_LINK_PREFIX}invalid/debug`,
+    }
+  }
+  const token = createTerminalDebugHintToken()
+  terminalDebugHintPayloadByToken.set(token, {
+    payload: normalizedPayload,
+    expiresAt: Date.now() + TERMINAL_DEBUG_HINT_LINK_TTL_MS,
+  })
+  trimTerminalDebugHintPayloadCache()
+  const encodedToken = encodeURIComponent(token)
+  return {
+    explainUri: `${TERMINAL_DEBUG_HINT_LINK_PREFIX}${encodedToken}/explain`,
+    debugUri: `${TERMINAL_DEBUG_HINT_LINK_PREFIX}${encodedToken}/debug`,
+  }
+}
+
+function parseTerminalDebugHintUri(uri: string): { token: string; action: 'explain' | 'debug' } | null {
+  const trimmed = uri.trim()
+  if (!trimmed.startsWith(TERMINAL_DEBUG_HINT_LINK_PREFIX)) {
+    return null
+  }
+  const rest = trimmed.slice(TERMINAL_DEBUG_HINT_LINK_PREFIX.length)
+  const [encodedToken = '', rawAction = ''] = rest.split('/', 2)
+  if (!encodedToken || !rawAction) {
+    return null
+  }
+  const action = rawAction.toLowerCase().replace(/[^a-z]/g, '')
+  if (action !== 'explain' && action !== 'debug') {
+    return null
+  }
+  try {
+    const token = decodeURIComponent(encodedToken)
+    if (!token.trim()) {
+      return null
+    }
+    return { token, action }
+  } catch {
+    return null
+  }
+}
+
+function clearTerminalDebugHintPayloadsBySession(sessionId: string): void {
+  if (!sessionId) {
+    return
+  }
+  terminalCommandHistoryBySession.delete(sessionId)
+  for (const [token, entry] of terminalDebugHintPayloadByToken.entries()) {
+    if (entry.payload.sessionId === sessionId) {
+      terminalDebugHintPayloadByToken.delete(token)
+    }
+  }
+}
+
+function writeTerminalDebugHintLine(sessionId: string, payload: TerminalDebugHintPayload): void {
+  if (!terminal || sessionId !== activeBridgeSessionId) {
+    return
+  }
+  const links = registerTerminalDebugHintPayload(payload)
+  const osc8 = (url: string, label: string): string => `\u001b]8;;${url}\u0007${label}\u001b]8;;\u0007`
+  const explain = osc8(links.explainUri, `[${t('terminal.debugHint.explainAction')}]`)
+  const debug = osc8(links.debugUri, `[${t('terminal.debugHint.debugAction')}]`)
+  const content = `\r\n❌ ${t('terminal.debugHint.commandFailed')}   ${explain} ${debug}\r\n`
+  terminal.write(content)
+}
+
+function consumeTerminalDebugHintToken(token: string): {
+  ok: true
+  payload: TerminalDebugHintPayload
+} | {
+  ok: false
+  reason: 'expired' | 'consumed'
+} {
+  clearExpiredTerminalDebugHintTokens()
+  if (terminalDebugHintConsumedTokenExpiryByToken.has(token)) {
+    return { ok: false, reason: 'consumed' }
+  }
+  const entry = terminalDebugHintPayloadByToken.get(token)
+  if (!entry) {
+    return { ok: false, reason: 'expired' }
+  }
+  terminalDebugHintPayloadByToken.delete(token)
+  terminalDebugHintConsumedTokenExpiryByToken.set(
+    token,
+    Date.now() + TERMINAL_DEBUG_HINT_LINK_CONSUMED_TTL_MS,
+  )
+  return {
+    ok: true,
+    payload: normalizeTerminalDebugPayload(entry.payload),
+  }
+}
+
+function maybeShowTerminalDebugHint(sessionId: string, trace: TerminalCommandTrace): void {
+  if (!trace.command.trim()) {
     return
   }
   if (aiCommandBarVisible.value) {
     return
   }
-
-  const now = Date.now()
-  const lastAt = lastTerminalDebugHintAtBySession.get(sessionId) ?? 0
-  if (now - lastAt < TERMINAL_DEBUG_HINT_COOLDOWN_MS) {
+  if (sessionId !== activeBridgeSessionId) {
     return
   }
 
-  const context = buildTerminalDebugContext(sessionId, chunk)
-  if (!context) {
+  const normalizedPayload = normalizeTerminalDebugPayload({
+    sessionId,
+    context: trace.output
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter((line) => line.trim().length > 0)
+      .slice(-TERMINAL_DEBUG_CONTEXT_MAX_LINES)
+      .join('\n'),
+    command: trace.command,
+  })
+  if (!normalizedPayload.context || !normalizedPayload.command) {
     return
   }
-  lastTerminalDebugHintAtBySession.set(sessionId, now)
-  terminalDebugHintSessionId.value = sessionId
-  terminalDebugHintContext.value = context
+  terminalDebugHintSessionId.value = normalizedPayload.sessionId
+  terminalDebugHintContext.value = normalizedPayload.context
+  terminalDebugHintCommand.value = normalizedPayload.command
+  terminalDebugHintExitCode.value = trace.exitCode
   terminalDebugHintVisible.value = true
+  writeTerminalDebugHintLine(normalizedPayload.sessionId, normalizedPayload)
 }
 
-async function onDebugWithNovar(): Promise<void> {
-  const sessionId = terminalDebugHintSessionId.value.trim()
-  const context = terminalDebugHintContext.value.trim()
-  if (!sessionId || !context) {
-    dismissTerminalDebugHint()
-    return
-  }
-  if (aiCommandBarLoading.value) {
-    globalMessage.info(t('terminal.aiBar.busy'), { replace: true })
-    return
-  }
-
-  await ensureAICommandBarReady()
-  const latestCommand = resolveLatestSessionCommand(sessionId)
-  const outputLine = pickTerminalDebugOutputLine(context)
-  const displayMessage: AIChatMessage = {
+function buildDebugHintDisplayMessage(contentKey: string, outputLine: string, command: string): AIChatMessage {
+  return {
     role: 'user',
-    content: t('terminal.debugHint.userMessage'),
+    content: t(contentKey),
     displayCard: {
-      title: t('terminal.debugHint.userMessage'),
+      title: t(contentKey),
       sections: [
         {
           label: t('terminal.debugHint.terminalOutput'),
@@ -2060,29 +2476,159 @@ async function onDebugWithNovar(): Promise<void> {
         },
         {
           label: t('terminal.debugHint.command'),
-          value: latestCommand || t('terminal.debugHint.noCommand'),
+          value: command || t('terminal.debugHint.noCommand'),
         },
       ],
     },
   }
-  const debugApiMessage: AIChatMessage = {
-    role: 'user',
-    content: `Debug this terminal output:
-${context}
+}
 
-Last executed command (if available):
-${latestCommand || '(unknown)'}
-
-Output requirements:
-1) Identify the most likely root causes (ranked by likelihood).
-2) Provide concrete troubleshooting steps and executable commands.
-3) Mark risky commands and give safer alternatives when possible.
-4) If information is insufficient, list exactly which command/output is needed next.`,
+function getCurrentTerminalDebugHintPayload(): TerminalDebugHintPayload | null {
+  const sessionId = terminalDebugHintSessionId.value.trim()
+  const context = terminalDebugHintContext.value.trim()
+  const command = terminalDebugHintCommand.value.trim()
+  if (!sessionId || !context || !command) {
+    return null
   }
-  const recentContext = aiCommandBarMessages.value.slice(-AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES)
+  return {
+    sessionId,
+    context,
+    command,
+  }
+}
+
+async function explainErrorWithPayload(payload: TerminalDebugHintPayload): Promise<void> {
+  const { sessionId, context, command } = normalizeTerminalDebugPayload(payload)
+  if (!context || !command) {
+    dismissTerminalDebugHint()
+    return
+  }
+  if (aiCommandBarLoading.value) {
+    writeTerminalDebugHintStatusLine(sessionId, 'terminal.debugHint.busy')
+    globalMessage.info(t('terminal.debugHint.busy'), { replace: true })
+    return
+  }
+
+  writeTerminalDebugHintStatusLine(sessionId, 'terminal.debugHint.openingAnalysis')
+  await ensureAICommandBarReady()
+  const outputLine = pickTerminalDebugOutputLine(context)
+  const displayMessage = buildDebugHintDisplayMessage('terminal.debugHint.explainUserMessage', outputLine, command)
+  const shellHistory = buildTerminalShellHistoryContextForAI(sessionId)
   aiCommandBarMessages.value = [...aiCommandBarMessages.value, displayMessage]
   dismissTerminalDebugHint()
-  await sendAIMessagesAndStream([...recentContext, debugApiMessage])
+  await sendAIMessagesAndStream([displayMessage], {
+    scenarioSystemPrompt: buildAIExplainErrorSystemPrompt(context, command, shellHistory),
+  })
+}
+
+async function debugErrorWithPayload(payload: TerminalDebugHintPayload): Promise<void> {
+  const { sessionId, context, command } = normalizeTerminalDebugPayload(payload)
+  if (!context || !command) {
+    dismissTerminalDebugHint()
+    return
+  }
+  if (aiCommandBarLoading.value) {
+    writeTerminalDebugHintStatusLine(sessionId, 'terminal.debugHint.busy')
+    globalMessage.info(t('terminal.debugHint.busy'), { replace: true })
+    return
+  }
+
+  writeTerminalDebugHintStatusLine(sessionId, 'terminal.debugHint.openingAnalysis')
+  await ensureAICommandBarReady()
+  const outputLine = pickTerminalDebugOutputLine(context)
+  const displayMessage = buildDebugHintDisplayMessage('terminal.debugHint.userMessage', outputLine, command)
+  const shellHistory = buildTerminalShellHistoryContextForAI(sessionId)
+  aiCommandBarMessages.value = [...aiCommandBarMessages.value, displayMessage]
+  dismissTerminalDebugHint()
+  await sendAIMessagesAndStream([displayMessage], {
+    scenarioSystemPrompt: buildAIDebugSystemPrompt(context, command, shellHistory),
+  })
+}
+
+function getRendererShellApi(): RendererShellApi | undefined {
+  const maybeWindow = window as Window & {
+    electronAPI?: { shell?: RendererShellApi }
+    __electronAPIBridge?: { shell?: RendererShellApi }
+  }
+  return maybeWindow.electronAPI?.shell ?? maybeWindow.__electronAPIBridge?.shell
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function tryActivateTerminalLink(uri: string, event: MouseEvent, shellApi?: RendererShellApi): boolean {
+  const trimmedUri = uri.trim()
+  if (!trimmedUri) {
+    return false
+  }
+
+  if (trimmedUri.startsWith(TERMINAL_DEBUG_HINT_LINK_PREFIX)) {
+    if (!tryHandleTerminalDebugHintUri(trimmedUri)) {
+      const currentSession = activeBridgeSessionId ?? terminalDebugHintSessionId.value
+      if (currentSession) {
+        writeTerminalDebugHintStatusLine(currentSession, 'terminal.debugHint.linkExpired')
+      }
+      globalMessage.info(t('terminal.debugHint.linkExpired'), { replace: true })
+    }
+    return true
+  }
+
+  if (isHttpUrl(trimmedUri) && (event.metaKey || event.ctrlKey)) {
+    shellApi?.openExternal(trimmedUri).catch(() => {})
+    return true
+  }
+
+  return false
+}
+
+function tryHandleTerminalDebugHintUri(uri: string): boolean {
+  const parsed = parseTerminalDebugHintUri(uri)
+  if (!parsed) {
+    return false
+  }
+  const consumed = consumeTerminalDebugHintToken(parsed.token)
+  if (!consumed.ok) {
+    const messageKey =
+      consumed.reason === 'consumed'
+        ? 'terminal.debugHint.linkAlreadyUsed'
+        : 'terminal.debugHint.linkExpired'
+    const currentSession = activeBridgeSessionId ?? terminalDebugHintSessionId.value
+    if (currentSession) {
+      writeTerminalDebugHintStatusLine(currentSession, messageKey)
+    }
+    globalMessage.info(t(messageKey), { replace: true })
+    return true
+  }
+  if (parsed.action === 'explain') {
+    void explainErrorWithPayload(consumed.payload)
+  } else {
+    void debugErrorWithPayload(consumed.payload)
+  }
+  return true
+}
+
+async function onExplainError(): Promise<void> {
+  const payload = getCurrentTerminalDebugHintPayload()
+  if (!payload) {
+    dismissTerminalDebugHint()
+    return
+  }
+  await explainErrorWithPayload(payload)
+}
+
+async function onDebugWithNovar(): Promise<void> {
+  const payload = getCurrentTerminalDebugHintPayload()
+  if (!payload) {
+    dismissTerminalDebugHint()
+    return
+  }
+  await debugErrorWithPayload(payload)
 }
 
 function sanitizeTerminalChunkForPromptAnalysis(chunk: string): string {
@@ -3734,6 +4280,8 @@ function commitSessionCommand(sessionId: string, rawCommand: string): void {
     return
   }
 
+  beginTerminalCommandTrace(sessionId, command)
+
   const history = getSessionHistoryList(sessionId).filter((item) => item !== command)
   history.push(command)
 
@@ -3898,18 +4446,11 @@ async function explainSelectedTerminalText(selectedText: string): Promise<void> 
     role: 'user',
     content: selection,
   }
-  const explainApiMessage: AIChatMessage = {
-    role: 'user',
-    content: `Explain this selected terminal text:
-${selection}
-
-Output requirements:
-1) If the text is a shell command: explain purpose, key arguments, risks, and provide one safer example if applicable.
-2) If the text looks like logs/errors/output: summarize meaning, likely causes, and suggest next troubleshooting steps.`,
-  }
   const recentContext = aiCommandBarMessages.value.slice(-AI_COMMAND_BAR_CONTEXT_RECENT_MESSAGES)
   aiCommandBarMessages.value = [...aiCommandBarMessages.value, displayMessage]
-  await sendAIMessagesAndStream([...recentContext, explainApiMessage])
+  await sendAIMessagesAndStream([...recentContext, displayMessage], {
+    scenarioSystemPrompt: buildAIExplainSelectionSystemPrompt(selection),
+  })
 }
 
 async function pasteTextWithGuards(text: string): Promise<void> {
@@ -5458,6 +5999,10 @@ function toLocalShellDisplayName(raw: string | null | undefined): string | null 
     return 'bash'
   }
 
+  if (candidate.includes('fish')) {
+    return 'fish'
+  }
+
   return null
 }
 
@@ -6276,7 +6821,12 @@ function attachBridgeListeners(): void {
         }
 
         sessionCache.appendTranscript(sessionId, chunk)
-        maybeShowTerminalDebugHint(sessionId, chunk)
+        appendTerminalCommandTraceOutput(sessionId, chunk)
+        const commandExitCode = extractExitCodeFromChunk(chunk)
+        if (commandExitCode != null) {
+          markTerminalCommandTraceExitCode(sessionId, commandExitCode)
+          finalizeTerminalCommandTrace(sessionId)
+        }
         schedulePersistLocalSessionSnapshot(sessionId)
         if (isLocalSession(sessionId)) {
           const disconnectHost = detectSshDisconnectHostFromOutput(chunk)
@@ -6375,11 +6925,10 @@ function attachBridgeListeners(): void {
         sessionCache.clearOpenedSession(payloadSessionId)
         clearSnapshotPersistTimer(payloadSessionId)
         clearHistoryPersistTimer(payloadSessionId)
-        lastTerminalDebugHintAtBySession.delete(payloadSessionId)
+        terminalCommandTraceBySession.delete(payloadSessionId)
+        clearTerminalDebugHintPayloadsBySession(payloadSessionId)
         if (terminalDebugHintSessionId.value === payloadSessionId) {
           dismissTerminalDebugHint()
-          terminalDebugHintSessionId.value = ''
-          terminalDebugHintContext.value = ''
         }
         void persistLocalSessionSnapshotNow(payloadSessionId)
         void persistLocalSessionHistoryNow(payloadSessionId)
@@ -6722,6 +7271,7 @@ async function bootTerminal(): Promise<void> {
     }
 
     const appearanceOptions = resolveTerminalAppearanceOptions()
+    const shellApi = getRendererShellApi()
     terminal = new TerminalCtor({
       cursorBlink: true,
       convertEol: false,
@@ -6730,6 +7280,12 @@ async function bootTerminal(): Promise<void> {
       cursorStyle: appearanceOptions.cursorStyle,
       fontFamily: appearanceOptions.fontFamily,
       theme: appearanceOptions.theme,
+      linkHandler: {
+        activate: (event: MouseEvent, text: string) => {
+          void tryActivateTerminalLink(text, event, shellApi)
+        },
+        allowNonHttpProtocols: false,
+      },
     })
 
     terminal.open(mountEl.value)
@@ -6770,10 +7326,10 @@ async function bootTerminal(): Promise<void> {
       const webLinksModule = await import('@xterm/addon-web-links')
       const WebLinksAddonCtor = (webLinksModule as { WebLinksAddon?: new (handler?: (event: MouseEvent, uri: string) => void) => { dispose?: () => void } }).WebLinksAddon
       if (WebLinksAddonCtor) {
-        const shellApi = (window as Window & { electronAPI?: { shell?: { openExternal: (url: string) => Promise<unknown> } }; __electronAPIBridge?: { shell?: { openExternal: (url: string) => Promise<unknown> } } }).electronAPI?.shell ?? (window as Window & { __electronAPIBridge?: { shell?: { openExternal: (url: string) => Promise<unknown> } } }).__electronAPIBridge?.shell
         webLinksAddon = new WebLinksAddonCtor((event: MouseEvent, uri: string) => {
-          if (event.metaKey || event.ctrlKey) {
-            shellApi?.openExternal(uri).catch(() => {})
+          if (tryActivateTerminalLink(uri, event, shellApi)) {
+            event.preventDefault()
+            event.stopPropagation()
           }
         })
         terminal.loadAddon?.(webLinksAddon)
@@ -7097,11 +7653,10 @@ watch(
       clearHistoryPersistTimer(openedSessionId)
       sessionCommandHistory.delete(openedSessionId)
       sessionPendingInput.delete(openedSessionId)
-      lastTerminalDebugHintAtBySession.delete(openedSessionId)
+      terminalCommandTraceBySession.delete(openedSessionId)
+      clearTerminalDebugHintPayloadsBySession(openedSessionId)
       if (terminalDebugHintSessionId.value === openedSessionId) {
         dismissTerminalDebugHint()
-        terminalDebugHintSessionId.value = ''
-        terminalDebugHintContext.value = ''
       }
       resetLocalEchoLine(openedSessionId)
       sessionCache.clearTranscript(openedSessionId)
@@ -7131,8 +7686,6 @@ watch(
 
     if (terminalDebugHintSessionId.value && terminalDebugHintSessionId.value !== sessionId) {
       dismissTerminalDebugHint()
-      terminalDebugHintSessionId.value = ''
-      terminalDebugHintContext.value = ''
     }
     activeBridgeSessionId = null
     renderSessionTranscript(sessionId)
@@ -7239,11 +7792,10 @@ onBeforeUnmount(() => {
     clearHistoryPersistTimer(openedSessionId)
     sessionCommandHistory.delete(openedSessionId)
     sessionPendingInput.delete(openedSessionId)
-    lastTerminalDebugHintAtBySession.delete(openedSessionId)
+    terminalCommandTraceBySession.delete(openedSessionId)
+    clearTerminalDebugHintPayloadsBySession(openedSessionId)
     if (terminalDebugHintSessionId.value === openedSessionId) {
       dismissTerminalDebugHint()
-      terminalDebugHintSessionId.value = ''
-      terminalDebugHintContext.value = ''
     }
     resetLocalEchoLine(openedSessionId)
   }
@@ -7257,22 +7809,6 @@ onBeforeUnmount(() => {
   <section ref="xtermShellEl" class="xterm-shell">
     <div ref="mountEl" class="xterm-host" />
     <div v-if="fontZoomHint" class="font-zoom-hint">{{ fontZoomHint }}</div>
-    <div v-if="terminalDebugHintVisible" class="terminal-debug-hint">
-      <span class="terminal-debug-hint__text">{{ t('terminal.debugHint.detected') }}</span>
-      <div class="terminal-debug-hint__actions">
-        <button type="button" class="terminal-debug-hint__action" @click="void onDebugWithNovar()">
-          {{ t('terminal.debugHint.action') }}
-        </button>
-        <button
-          type="button"
-          class="terminal-debug-hint__dismiss"
-          :aria-label="t('terminal.debugHint.dismissAria')"
-          @click="dismissTerminalDebugHint"
-        >
-          ×
-        </button>
-      </div>
-    </div>
     <div
       v-if="contextMenuState.visible"
       ref="contextMenuEl"
@@ -7574,6 +8110,25 @@ onBeforeUnmount(() => {
   }
 }
 
+.xterm-shell :deep(.xterm a) {
+  text-decoration: none !important;
+  border-bottom: none !important;
+}
+
+.xterm-shell :deep(.xterm .xterm-underline-4),
+.xterm-shell :deep(.xterm .xterm-underline-5),
+.xterm-shell :deep(.xterm .xterm-overline.xterm-underline-4),
+.xterm-shell :deep(.xterm .xterm-overline.xterm-underline-5) {
+  text-decoration-line: underline !important;
+  text-decoration-style: solid !important;
+}
+
+.xterm-shell :deep(.xterm a:hover),
+.xterm-shell :deep(.xterm a:focus-visible) {
+  text-decoration-line: underline !important;
+  text-decoration-style: solid !important;
+}
+
 .xterm-shell:hover :deep(.xterm .xterm-viewport::-webkit-scrollbar-thumb) {
   background-color: var(--term-scrollbar-thumb, #334155);
 }
@@ -7594,68 +8149,6 @@ onBeforeUnmount(() => {
   line-height: 24px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     'Courier New', monospace;
-}
-
-.terminal-debug-hint {
-  position: absolute;
-  left: 10px;
-  top: 10px;
-  z-index: 2895;
-  max-width: min(70%, 720px);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(251, 146, 60, 0.45);
-  background: rgba(67, 20, 7, 0.92);
-  color: #ffedd5;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-}
-
-.terminal-debug-hint__text {
-  font-size: 12px;
-  line-height: 1.3;
-  word-break: break-word;
-}
-
-.terminal-debug-hint__actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-}
-
-.terminal-debug-hint__action {
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid rgba(253, 186, 116, 0.55);
-  border-radius: 6px;
-  background: rgba(251, 146, 60, 0.2);
-  color: #ffedd5;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.terminal-debug-hint__action:hover {
-  background: rgba(251, 146, 60, 0.3);
-}
-
-.terminal-debug-hint__dismiss {
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: #fdba74;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.terminal-debug-hint__dismiss:hover {
-  background: rgba(253, 186, 116, 0.16);
-  color: #ffedd5;
 }
 
 .xterm-fallback {

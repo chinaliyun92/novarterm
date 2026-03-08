@@ -656,7 +656,7 @@ export class SSHService {
     onDisposed: () => void,
   ): LocalTerminalContext {
     const initialCwd = resolveLocalStartupCwd(options.cwd);
-    const { pty, shellName } = startLocalPtyWithFallback(options, initialCwd);
+    const { pty, shellName, cleanupBootstrap } = startLocalPtyWithFallback(options, initialCwd);
 
     let closePromise: Promise<void> | null = null;
     let disposed = false;
@@ -727,6 +727,7 @@ export class SSHService {
         return;
       }
       disposed = true;
+      cleanupBootstrap();
       onDataDisposable?.dispose();
       onDataDisposable = null;
       onExitDisposable?.dispose();
@@ -1057,6 +1058,11 @@ interface LocalShellLaunchSpec {
   args: string[];
 }
 
+interface LocalShellBootstrap {
+  env: Record<string, string>;
+  cleanup: () => void;
+}
+
 const nodeRequire = createRequire(__filename);
 let nodePtyHelperPermissionChecked = false;
 
@@ -1096,13 +1102,13 @@ function normalizeLocalShellName(command: string): string | null {
 function startLocalPtyWithFallback(
   options: TerminalOpenOptions,
   cwd: string,
-): { pty: IPty; shellName: string | null } {
+): { pty: IPty; shellName: string | null; cleanupBootstrap: () => void } {
   ensureNodePtySpawnHelperExecutable();
 
   const termName = options.term ?? process.env.TERM ?? "xterm-256color";
   const cols = Math.max(1, Math.floor(options.cols ?? 120));
   const rows = Math.max(1, Math.floor(options.rows ?? 36));
-  const env = {
+  const baseEnv = {
     ...process.env,
     PWD: cwd,
     TERM: termName,
@@ -1114,19 +1120,22 @@ function startLocalPtyWithFallback(
   let lastError: unknown = null;
 
   for (const launchSpec of launchSpecs) {
+    const bootstrap = prepareLocalShellBootstrapEnv(launchSpec, baseEnv);
     try {
       const pty = spawnPty(launchSpec.command, launchSpec.args, {
         name: termName,
         cols,
         rows,
         cwd,
-        env,
+        env: bootstrap.env,
       });
       return {
         pty,
         shellName: normalizeLocalShellName(launchSpec.command),
+        cleanupBootstrap: bootstrap.cleanup,
       };
     } catch (error) {
+      bootstrap.cleanup();
       lastError = error;
     }
   }
@@ -1136,6 +1145,118 @@ function startLocalPtyWithFallback(
     "Failed to start local shell (all candidate shell commands failed)",
     lastError,
   );
+}
+
+function prepareLocalShellBootstrapEnv(
+  launchSpec: LocalShellLaunchSpec,
+  baseEnv: Record<string, string>,
+): LocalShellBootstrap {
+  const shellName = normalizeLocalShellName(launchSpec.command);
+  if (process.platform === "win32") {
+    return {
+      env: { ...baseEnv },
+      cleanup: () => {},
+    };
+  }
+
+  if (shellName === "bash") {
+    const novartermPromptCommand = "printf '\\033]133;D;%s\\007' \"$?\"";
+    const existingPromptCommand = typeof baseEnv.PROMPT_COMMAND === "string" ? baseEnv.PROMPT_COMMAND : "";
+    const mergedPromptCommand = existingPromptCommand.includes("]133;D;")
+      ? existingPromptCommand
+      : existingPromptCommand
+        ? `${novartermPromptCommand};${existingPromptCommand}`
+        : novartermPromptCommand;
+    return {
+      env: {
+        ...baseEnv,
+        PROMPT_COMMAND: mergedPromptCommand,
+      },
+      cleanup: () => {},
+    };
+  }
+
+  if (shellName !== "zsh") {
+    return {
+      env: { ...baseEnv },
+      cleanup: () => {},
+    };
+  }
+
+  try {
+    const bootstrapDir = fs.mkdtempSync(path.join(os.tmpdir(), "novarterm-zsh-"));
+    const writeScript = (name: string, content: string): void => {
+      fs.writeFileSync(path.join(bootstrapDir, name), content, { encoding: "utf8", mode: 0o600 });
+    };
+
+    writeScript(
+      ".zshenv",
+      [
+        'export NOVARTERM_BOOTSTRAP_ZDOTDIR="$ZDOTDIR"',
+        'if [ -f "$HOME/.zshenv" ]; then',
+        '  source "$HOME/.zshenv"',
+        "fi",
+        'export ZDOTDIR="$NOVARTERM_BOOTSTRAP_ZDOTDIR"',
+        "unset NOVARTERM_BOOTSTRAP_ZDOTDIR",
+        "",
+      ].join("\n"),
+    );
+    writeScript(
+      ".zprofile",
+      [
+        'if [ -f "$HOME/.zprofile" ]; then',
+        '  source "$HOME/.zprofile"',
+        "fi",
+        "",
+      ].join("\n"),
+    );
+    writeScript(
+      ".zshrc",
+      [
+        'if [ -f "$HOME/.zshrc" ]; then',
+        '  source "$HOME/.zshrc"',
+        "fi",
+        "if (( ${+functions[__novarterm_precmd]} == 0 )); then",
+        "  function __novarterm_precmd() {",
+        "    local ec=$?",
+        "    printf '\\033]133;D;%s\\007' \"$ec\"",
+        "  }",
+        "fi",
+        "if (( ${precmd_functions[(I)__novarterm_precmd]} == 0 )); then",
+        "  precmd_functions=(__novarterm_precmd ${precmd_functions[@]})",
+        "fi",
+        "",
+      ].join("\n"),
+    );
+    writeScript(
+      ".zlogin",
+      [
+        'if [ -f "$HOME/.zlogin" ]; then',
+        '  source "$HOME/.zlogin"',
+        "fi",
+        "",
+      ].join("\n"),
+    );
+
+    return {
+      env: {
+        ...baseEnv,
+        ZDOTDIR: bootstrapDir,
+      },
+      cleanup: () => {
+        try {
+          fs.rmSync(bootstrapDir, { recursive: true, force: true });
+        } catch {
+          // Ignore cleanup errors for temporary bootstrap files.
+        }
+      },
+    };
+  } catch {
+    return {
+      env: { ...baseEnv },
+      cleanup: () => {},
+    };
+  }
 }
 
 function ensureNodePtySpawnHelperExecutable(): void {

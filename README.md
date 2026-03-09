@@ -81,7 +81,8 @@ Status legend: `✅ Available` · `⚠️ In progress / partial` · `❌ Planned
 
 - Supports trigger rules based on terminal-output keyword matching.
 - Each trigger has independent enable/disable state.
-- Each trigger has independent auto-send toggle.
+- `Enabled`: controls whether matched trigger writes configured text into terminal input.
+- `Auto Send`: controls whether written trigger text is submitted automatically (Enter).
 - Default behavior is safe (auto-send off) to reduce accidental execution.
 
 ### 8) i18n and Usability Baseline
@@ -95,11 +96,6 @@ Status legend: `✅ Available` · `⚠️ In progress / partial` · `❌ Planned
 - File upload capability is available only when file pane source is remote.
 - Shell drag-and-drop is strictly path insertion, not transport behavior.
 - Platform validation is currently macOS-first; Windows/Linux verification is still in progress.
-
-## Documentation
-
-- User-facing feature overview: [docs/app-features-overview.md](docs/app-features-overview.md)
-- Engineering capability matrix: [docs/app-technical-capability-matrix.md](docs/app-technical-capability-matrix.md)
 
 ## Screenshots
 

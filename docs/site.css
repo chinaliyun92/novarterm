@@ -224,7 +224,7 @@ body {
   width: 100%;
   min-width: 860px;
   border-collapse: collapse;
-  table-layout: fixed;
+  table-layout: auto;
 }
 
 .roadmap-table th,
@@ -260,20 +260,25 @@ body {
 
 .roadmap-table th:nth-child(1),
 .roadmap-table td:nth-child(1) {
-  width: 56px;
-  text-align: center;
+  width: 140px;
+  white-space: nowrap;
+}
+
+.roadmap-table td:nth-child(1) {
   color: #a9bbdc;
+  font-weight: 600;
 }
 
 .roadmap-table th:nth-child(2),
 .roadmap-table td:nth-child(2) {
-  width: 34%;
+  width: auto;
 }
 
 .roadmap-table th:nth-child(3),
 .roadmap-table td:nth-child(3) {
-  width: 96px;
+  width: 112px;
   text-align: center;
+  color: #a9bbdc;
 }
 
 .status-badge {

@@ -57,78 +57,146 @@
           <table class="roadmap-table">
             <thead>
               <tr>
-                <th>#</th>
-                <th>Capability</th>
+                <th>Category</th>
+                <th>Description</th>
                 <th>Status</th>
-                <th>Notes</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td>1</td>
-                <td>AI command bar (chat / explain / run / insert)</td>
+                <td>AI</td>
+                <td><code>Command + K</code> quickly opens/closes AI Command Bar, with continuous conversation in the same workspace.</td>
                 <td><span class="status-badge ok">✅</span></td>
-                <td>Streaming responses, model routing, context control, and language policy are all active in core flow.</td>
               </tr>
               <tr>
-                <td>2</td>
-                <td>Structured AI debugging</td>
+                <td>AI</td>
+                <td>Shell right-click <code>Explain with AI</code> automatically sends context-aware prompts from terminal content.</td>
                 <td><span class="status-badge ok">✅</span></td>
-                <td>Error pattern detection triggers <code>Debug with Novar</code> with structured context cards for faster diagnosis.</td>
               </tr>
               <tr>
-                <td>3</td>
-                <td>Multi-tab and multi-pane workspace</td>
+                <td>AI</td>
+                <td>Smart error detection in terminal output surfaces quick actions like <code>Explain Error</code> and <code>Debug With AI</code>.</td>
                 <td><span class="status-badge ok">✅</span></td>
-                <td>Tab/pane operations and layout restore after restart.</td>
               </tr>
               <tr>
-                <td>4</td>
-                <td>Remote SSH workflow</td>
+                <td>AI</td>
+                <td>Action modes <code>Explain</code>, <code>Run</code>, and <code>Insert</code> are available in one unified AI workflow.</td>
                 <td><span class="status-badge ok">✅</span></td>
-                <td>Saved server quick-connect and manual <code>ssh</code> both supported.</td>
               </tr>
               <tr>
-                <td>5</td>
-                <td>Unified local/remote file pane</td>
+                <td>AI</td>
+                <td>Built-in baseline AI models are provided, and users can add custom models.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>AI</td>
+                <td>AI Command Bar supports quickly switching custom models.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>AI</td>
+                <td>Terminal inline assistant can quickly generate commands when input starts with <code>&gt;</code>.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>Workspace</td>
+                <td>Multi-pane workflow supports horizontal split, vertical split, and close focused pane.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>Workspace</td>
+                <td>Workspace layout restore after restart is supported for tabs and panes.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>Workspace</td>
+                <td>New pane actions support inheriting the contextual working directory.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>SSH</td>
+                <td>Multiple server profiles can be saved in Settings.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>SSH</td>
+                <td>Terminal right-click can quickly connect in current pane, new pane, or new tab.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>SSH</td>
+                <td>Connection failures and status changes provide actionable feedback for retry/switch.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>File Pane</td>
+                <td>Terminal right-click menu can quickly open local or remote server file browser panel.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>File Pane</td>
+                <td>Server/source can be switched quickly inside the file browser panel.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>File Pane</td>
+                <td>Remote server pane supports quick upload for both files and directories.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>File Pane</td>
+                <td>File browser panel supports quick file download from remote server.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>File Pane</td>
+                <td>File browser panel supports quick create file, create directory, delete file, and extract ZIP archive operations.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>Drag-and-drop</td>
+                <td>Local terminal supports quick path parsing/insertion for dropped files and directories.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>Drag-and-drop</td>
+                <td>Remote file pane supports drag-and-drop upload for files and directories.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>Transfer Center</td>
+                <td>Unified upload/download progress and history tracking is available.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>Transfer Center</td>
+                <td>Supports quickly opening the local file location for transferred items.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>Trigger</td>
+                <td>Supports multiple rule sets, with keyword matching that can automatically input and send configured commands.</td>
+                <td><span class="status-badge ok">✅</span></td>
+              </tr>
+              <tr>
+                <td>Trigger</td>
+                <td>Advanced matching rules and broader automation scenarios are still evolving.</td>
                 <td><span class="status-badge warn">⚠️</span></td>
-                <td>Core browse/upload/download is ready; deeper workflows still evolving.</td>
               </tr>
               <tr>
-                <td>6</td>
-                <td>Predictable drag-and-drop rules</td>
-                <td><span class="status-badge ok">✅</span></td>
-                <td>Path insertion to shell vs confirmed upload to remote pane.</td>
-              </tr>
-              <tr>
-                <td>7</td>
-                <td>Centralized transfer center</td>
-                <td><span class="status-badge ok">✅</span></td>
-                <td>Unified progress and history tracking for transfers.</td>
-              </tr>
-              <tr>
-                <td>8</td>
-                <td>Trigger automation and i18n</td>
+                <td>i18n</td>
+                <td>Core terminal, file, settings, and AI flows support English and Chinese; coverage continues to expand.</td>
                 <td><span class="status-badge warn">⚠️</span></td>
-                <td>Core capability is ready; advanced rules and coverage are expanding.</td>
               </tr>
               <tr>
-                <td>9</td>
-                <td>Native platform polish and deep OS integration</td>
+                <td>Platform</td>
+                <td>Native platform polish and deep OS integration are improving across app lifecycle and preferences.</td>
                 <td><span class="status-badge warn">⚠️</span></td>
-                <td>Preferences and platform-specific experiences are still improving.</td>
               </tr>
               <tr>
-                <td>10</td>
-                <td>Full cross-platform validation (Windows/Linux)</td>
+                <td>Platform</td>
+                <td>Full cross-platform validation is still in progress (macOS verified first; Windows/Linux pending).</td>
                 <td><span class="status-badge warn">⚠️</span></td>
-                <td>macOS is verified first; broader validation is in progress.</td>
-              </tr>
-              <tr>
-                <td>N</td>
-                <td>Advanced features to be expanded later</td>
-                <td><span class="status-badge no">❌</span></td>
-                <td>Reserved for future roadmap items.</td>
               </tr>
             </tbody>
           </table>

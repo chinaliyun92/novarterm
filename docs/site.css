@@ -211,48 +211,94 @@ body {
   border: 1px solid #24385e;
 }
 
-.feature-grid {
-  margin-top: 20px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 28px;
-  row-gap: 0;
+.roadmap-table-wrap {
+  margin-top: 16px;
+  border: 1px solid rgba(60, 84, 126, 0.78);
+  border-radius: 12px;
+  overflow: auto;
+  background: rgba(10, 18, 34, 0.74);
 }
 
-.feature-card {
-  position: relative;
-  border: 0;
-  background: transparent;
-  border-radius: 0;
-  padding: 18px 0 16px;
+.roadmap-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+  table-layout: fixed;
 }
 
-.feature-card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 1px;
-  background: linear-gradient(90deg, rgba(108, 137, 188, 0.42), rgba(108, 137, 188, 0.12));
+.roadmap-table th,
+.roadmap-table td {
+  padding: 12px 12px;
+  border-bottom: 1px solid rgba(60, 84, 126, 0.56);
+  color: #cddaf4;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  vertical-align: middle;
 }
 
-.feature-card:nth-child(1)::before,
-.feature-card:nth-child(2)::before {
-  display: none;
+.roadmap-table th {
+  background: rgba(20, 32, 57, 0.92);
+  color: #e6efff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
 }
 
-.feature-card h3 {
-  margin: 0;
-  font-size: 18px;
-  letter-spacing: -0.2px;
+.roadmap-table tbody tr:nth-child(odd) {
+  background: rgba(11, 20, 39, 0.7);
 }
 
-.feature-card p {
-  margin: 9px 0 0;
+.roadmap-table tbody tr:nth-child(even) {
+  background: rgba(14, 25, 48, 0.62);
+}
+
+.roadmap-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.roadmap-table th:nth-child(1),
+.roadmap-table td:nth-child(1) {
+  width: 56px;
+  text-align: center;
+  color: #a9bbdc;
+}
+
+.roadmap-table th:nth-child(2),
+.roadmap-table td:nth-child(2) {
+  width: 34%;
+}
+
+.roadmap-table th:nth-child(3),
+.roadmap-table td:nth-child(3) {
+  width: 96px;
+  text-align: center;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 24px;
+  border-radius: 999px;
   font-size: 14px;
-  line-height: 1.7;
-  color: #94a5c4;
+  line-height: 1;
+}
+
+.status-badge.ok {
+  background: rgba(45, 162, 93, 0.18);
+  border: 1px solid rgba(45, 162, 93, 0.35);
+}
+
+.status-badge.warn {
+  background: rgba(209, 155, 45, 0.2);
+  border: 1px solid rgba(209, 155, 45, 0.35);
+}
+
+.status-badge.no {
+  background: rgba(191, 70, 70, 0.2);
+  border: 1px solid rgba(191, 70, 70, 0.36);
 }
 
 .shot-grid {
@@ -301,13 +347,14 @@ body {
 }
 
 @media (max-width: 860px) {
-  .feature-grid,
   .shot-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .feature-card:nth-child(2)::before {
-    display: block;
+  .roadmap-table th,
+  .roadmap-table td {
+    padding: 10px 10px;
+    font-size: 12px;
   }
 
   .hero {

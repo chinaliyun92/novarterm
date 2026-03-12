@@ -22,6 +22,7 @@ Detailed capability roadmap for NovarTerm:
 | AI | AI Command Bar supports quickly switching custom models. | ✅ |
 | AI | Terminal inline assistant can quickly generate commands when input starts with `>`. | ✅ |
 | Workspace | Multi-pane workflow supports horizontal split, vertical split, and close focused pane. | ✅ |
+| Workspace | Drag pane headers to rearrange the split layout, with drop previews for top/left/right/bottom placement. | ✅ |
 | Workspace | Workspace layout restore after restart is supported for tabs and panes. | ✅ |
 | Workspace | New pane actions support inheriting the contextual working directory. | ✅ |
 | SSH | Multiple server profiles can be saved in Settings. | ✅ |

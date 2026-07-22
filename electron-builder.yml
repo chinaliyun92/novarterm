@@ -19,10 +19,11 @@ publish:
 mac:
   icon: build/icon.icns
   # Apple Silicon only; Intel Macs are no longer supported.
-  arch:
-    - arm64
+  defaultArch: arm64
   target:
-    - zip
+    - target: zip
+      arch:
+        - arm64
   category: public.app-category.developer-tools
 win:
   icon: build/icon.ico

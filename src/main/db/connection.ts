@@ -7,6 +7,13 @@ import { backupCorruptDatabase, verifyDatabaseIntegrity } from './recovery';
 
 export const DEFAULT_DB_FILE_NAME = 'iterm-mvp.sqlite3';
 
+export class DatabaseIntegrityError extends Error {
+  constructor(message = 'Database integrity check failed') {
+    super(message);
+    this.name = 'DatabaseIntegrityError';
+  }
+}
+
 export function resolveDatabasePath(options: DatabaseBootstrapOptions = {}): string {
   if (options.dbPath) {
     return path.resolve(options.dbPath);
@@ -17,6 +24,23 @@ export function resolveDatabasePath(options: DatabaseBootstrapOptions = {}): str
     : path.resolve(process.cwd(), 'data');
 
   return path.join(baseDir, options.dbFileName ?? DEFAULT_DB_FILE_NAME);
+}
+
+function isRecoverableDatabaseCorruption(error: unknown): boolean {
+  if (error instanceof DatabaseIntegrityError) {
+    return true;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('database integrity check failed') ||
+    message.includes('file is not a database') ||
+    message.includes('database disk image is malformed') ||
+    message.includes('sqlite_corrupt')
+  );
 }
 
 function openDatabaseFile(dbPath: string, options: DatabaseBootstrapOptions): Database.Database {
@@ -31,7 +55,7 @@ function openDatabaseFile(dbPath: string, options: DatabaseBootstrapOptions): Da
 
   if (!verifyDatabaseIntegrity(db)) {
     db.close();
-    throw new Error('Database integrity check failed');
+    throw new DatabaseIntegrityError();
   }
 
   return db;
@@ -50,6 +74,12 @@ export function createDatabaseConnection(
     return openDatabaseFile(dbPath, options);
   } catch (error) {
     if (options.readonly || options.fileMustExist) {
+      throw error;
+    }
+
+    // Never rename/wipe user data for non-corruption failures (e.g. native module
+    // architecture mismatch). Those must surface so the good DB stays intact.
+    if (!isRecoverableDatabaseCorruption(error)) {
       throw error;
     }
 

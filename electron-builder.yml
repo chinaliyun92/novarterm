@@ -18,6 +18,9 @@ publish:
   repo: novarterm
 mac:
   icon: build/icon.icns
+  # Apple Silicon only; Intel Macs are no longer supported.
+  arch:
+    - arm64
   target:
     - zip
   category: public.app-category.developer-tools

@@ -46,5 +46,4 @@ fi
 echo ""
 echo "完成。版本 v$VERSION 已构建并推送到源码仓库。"
 echo "请手动在发布仓库创建 tag/release，并上传 release/ 下的 Mac 安装包。"
-echo "自动更新需要至少上传：latest-mac.yml 和 NovarTerm-${VERSION}-mac.zip（universal）。"
-echo "另外也会产出：NovarTerm-${VERSION}-arm64-mac.zip 和 NovarTerm-${VERSION}-x64-mac.zip。"
+echo "自动更新需要至少上传：latest-mac.yml 和 NovarTerm-${VERSION}-arm64-mac.zip（Apple Silicon only）。"

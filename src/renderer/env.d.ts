@@ -1,0 +1,252 @@
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}
+
+import type {
+  CreateServerInput,
+  Server,
+  UpdateServerInput
+} from '../shared/types/db'
+import type {
+  DialogSaveFileRequest,
+  DialogSaveFileResponse,
+} from '../shared/types/dialog'
+import type { RendererErrorReport } from '../shared/types/log'
+import type {
+  LocalFileActionData,
+  LocalFileCreateDirectoryRequest,
+  LocalFileCreateFileRequest,
+  LocalFileDeleteRequest,
+  LocalFileImportData,
+  LocalFileImportRequest,
+  LocalFileListData,
+  LocalFileListRequest,
+  LocalFileRenameRequest,
+  LocalFileResult,
+} from '../shared/types/local-file'
+import type {
+  DeleteResult,
+  SearchServersRequest,
+  ServerConnectData,
+  ServerDirectoryRecordData,
+  ServerDirectoryRecordRequest,
+  ServerResult,
+  ServerSSHActionData,
+  ServersListData
+} from '../shared/types/server'
+import type {
+  SettingsCleanCommandBarHistoryRequest,
+  SettingsCleanCommandBarHistoryResponse,
+  SettingsGetResponse,
+  SettingsResult,
+  SettingsSetResponse,
+} from '../shared/types/settings'
+import type {
+  TerminalTriggerRule,
+  TriggerListResponse,
+  TriggerReplaceAllRequest,
+  TriggerReplaceAllResponse,
+  TriggerResult,
+} from '../shared/types/trigger'
+import type {
+  NativeUpdateState,
+  UpdateCheckResponse,
+  UpdateDownloadResponse,
+  UpdateOpenReleaseRequest,
+  UpdateOpenReleaseResponse,
+  UpdatePromptRequest,
+  UpdatePromptResponse,
+  UpdateRestartResponse,
+  UpdateResult,
+} from '../shared/types/update'
+import type {
+  SftpDownloadProgressEvent,
+  SftpUploadProgressEvent,
+  SftpExtractZipRequest,
+  SftpExtractZipResponse,
+  SftpGetRequest,
+  SftpListItem,
+  SftpListRequest,
+  SftpMkdirRequest,
+  SftpPutRequest,
+  SftpReadFileRequest,
+  SftpReadFileResponse,
+  SftpRenameRequest,
+  SftpRmRequest,
+  SftpWriteTextRequest,
+  SSHConnectRequest,
+  SSHConnectionSnapshot,
+  SSHResult,
+  SSHSessionRequest
+} from '../shared/types/ssh'
+import type {
+  TerminalCleanPersistedLogsRequest,
+  TerminalCleanPersistedLogsResponse,
+  TerminalCloseRequest,
+  TerminalCloseResponse,
+  TerminalDataEvent,
+  TerminalErrorEvent,
+  TerminalExitEvent,
+  TerminalGetCwdRequest,
+  TerminalGetCwdResponse,
+  TerminalLoadPersistedRequest,
+  TerminalLoadPersistedResponse,
+  TerminalOpenRequest,
+  TerminalOpenResponse,
+  TerminalSaveCwdRequest,
+  TerminalSaveCwdResponse,
+  TerminalPrepareForQuitCompleteRequest,
+  TerminalPrepareForQuitCompleteResponse,
+  TerminalPrepareForQuitEvent,
+  TerminalResizeRequest,
+  TerminalResizeResponse,
+  TerminalResult,
+  TerminalSaveSnapshotRequest,
+  TerminalSaveSnapshotResponse,
+  TerminalWriteTempFileRequest,
+  TerminalWriteTempFileResponse,
+  TerminalWriteRequest,
+  TerminalWriteResponse,
+} from '../shared/types/terminal'
+
+declare global {
+  interface PingResponse {
+    message: string
+    at: string
+    dbReady: boolean
+  }
+
+  interface ServerApi {
+    list: () => Promise<ServerResult<ServersListData>>
+    search: (query: SearchServersRequest) => Promise<ServerResult<ServersListData>>
+    create: (input: CreateServerInput) => Promise<ServerResult<Server>>
+    update: (serverId: number, input: UpdateServerInput) => Promise<ServerResult<Server>>
+    delete: (serverId: number) => Promise<ServerResult<DeleteResult>>
+    connect: (serverId: number, sessionId: string) => Promise<ServerResult<ServerConnectData>>
+    reconnect: (serverId: number, sessionId: string) => Promise<ServerResult<ServerSSHActionData>>
+    disconnect: (serverId: number, sessionId: string) => Promise<ServerResult<ServerSSHActionData>>
+    status: (serverId: number, sessionId: string) => Promise<ServerResult<ServerSSHActionData>>
+    recordDirectory: (request: ServerDirectoryRecordRequest) => Promise<ServerResult<ServerDirectoryRecordData>>
+  }
+
+  interface SshSftpApi {
+    list: (request: SftpListRequest) => Promise<SSHResult<SftpListItem[]>>
+    get: (request: SftpGetRequest) => Promise<SSHResult<void>>
+    put: (request: SftpPutRequest) => Promise<SSHResult<void>>
+    readFile: (request: SftpReadFileRequest) => Promise<SSHResult<SftpReadFileResponse>>
+    writeText: (request: SftpWriteTextRequest) => Promise<SSHResult<void>>
+    mkdir: (request: SftpMkdirRequest) => Promise<SSHResult<void>>
+    rm: (request: SftpRmRequest) => Promise<SSHResult<void>>
+    rename: (request: SftpRenameRequest) => Promise<SSHResult<void>>
+    extractZip: (request: SftpExtractZipRequest) => Promise<SSHResult<SftpExtractZipResponse>>
+  }
+
+  interface SshApi {
+    connect: (request: SSHConnectRequest) => Promise<SSHResult<SSHConnectionSnapshot>>
+    disconnect: (request: SSHSessionRequest) => Promise<SSHResult<SSHConnectionSnapshot>>
+    reconnect: (request: SSHSessionRequest) => Promise<SSHResult<SSHConnectionSnapshot>>
+    status: (request: SSHSessionRequest) => Promise<SSHResult<SSHConnectionSnapshot>>
+    onSftpDownloadProgress: (listener: (event: SftpDownloadProgressEvent) => void) => Unsubscribe
+    onSftpUploadProgress: (listener: (event: SftpUploadProgressEvent) => void) => Unsubscribe
+    sftp: SshSftpApi
+  }
+
+  interface SettingsApi {
+    get: (key: string) => Promise<SettingsResult<SettingsGetResponse>>
+    set: (key: string, value: string) => Promise<SettingsResult<SettingsSetResponse>>
+    cleanCommandBarHistory: (
+      request: SettingsCleanCommandBarHistoryRequest,
+    ) => Promise<SettingsResult<SettingsCleanCommandBarHistoryResponse>>
+  }
+
+  interface TriggerApi {
+    list: () => Promise<TriggerResult<TriggerListResponse>>
+    replaceAll: (request: TriggerReplaceAllRequest) => Promise<TriggerResult<TriggerReplaceAllResponse>>
+  }
+
+  interface UpdateApi {
+    check: () => Promise<UpdateResult<UpdateCheckResponse>>
+    getState: () => Promise<UpdateResult<NativeUpdateState>>
+    download: () => Promise<UpdateResult<UpdateDownloadResponse>>
+    restartToInstall: () => Promise<UpdateResult<UpdateRestartResponse>>
+    promptForUpdate: (request: UpdatePromptRequest) => Promise<UpdateResult<UpdatePromptResponse>>
+    openReleasePage: (request?: UpdateOpenReleaseRequest) => Promise<UpdateResult<UpdateOpenReleaseResponse>>
+    onStateChanged: (listener: (event: NativeUpdateState) => void) => Unsubscribe
+  }
+
+  interface DialogApi {
+    saveFile: (request: DialogSaveFileRequest) => Promise<DialogSaveFileResponse>
+  }
+
+  interface ShellApi {
+    openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
+    openPath: (path: string) => Promise<{ ok: boolean; error?: string }>
+  }
+
+  interface LogApi {
+    reportRendererError: (report: RendererErrorReport) => Promise<void>
+  }
+
+  interface LocalFileApi {
+    list: (request: LocalFileListRequest) => Promise<LocalFileResult<LocalFileListData>>
+    createFile: (request: LocalFileCreateFileRequest) => Promise<LocalFileResult<LocalFileActionData>>
+    createDirectory: (request: LocalFileCreateDirectoryRequest) => Promise<LocalFileResult<LocalFileActionData>>
+    rename: (request: LocalFileRenameRequest) => Promise<LocalFileResult<LocalFileActionData>>
+    delete: (request: LocalFileDeleteRequest) => Promise<LocalFileResult<LocalFileActionData>>
+    importPaths: (request: LocalFileImportRequest) => Promise<LocalFileResult<LocalFileImportData>>
+  }
+
+  type Unsubscribe = () => void
+
+  interface TerminalApi {
+    open: (request: TerminalOpenRequest) => Promise<TerminalResult<TerminalOpenResponse>>
+    write: (request: TerminalWriteRequest) => Promise<TerminalResult<TerminalWriteResponse>>
+    resize: (request: TerminalResizeRequest) => Promise<TerminalResult<TerminalResizeResponse>>
+    close: (request: TerminalCloseRequest) => Promise<TerminalResult<TerminalCloseResponse>>
+    getCwd: (request: TerminalGetCwdRequest) => Promise<TerminalResult<TerminalGetCwdResponse>>
+    loadPersisted: (request: TerminalLoadPersistedRequest) => Promise<TerminalResult<TerminalLoadPersistedResponse>>
+    saveCwd: (request: TerminalSaveCwdRequest) => Promise<TerminalResult<TerminalSaveCwdResponse>>
+    saveSnapshot: (request: TerminalSaveSnapshotRequest) => Promise<TerminalResult<TerminalSaveSnapshotResponse>>
+    prepareForQuitComplete: (request: TerminalPrepareForQuitCompleteRequest) => Promise<TerminalResult<TerminalPrepareForQuitCompleteResponse>>
+    cleanPersistedLogs: (request: TerminalCleanPersistedLogsRequest) => Promise<TerminalResult<TerminalCleanPersistedLogsResponse>>
+    writeTempFile: (request: TerminalWriteTempFileRequest) => Promise<TerminalResult<TerminalWriteTempFileResponse>>
+    resolveFilePath: (file: File) => string | null
+    onData: (listener: (event: TerminalDataEvent) => void) => Unsubscribe
+    onExit: (listener: (event: TerminalExitEvent) => void) => Unsubscribe
+    onError: (listener: (event: TerminalErrorEvent) => void) => Unsubscribe
+    onPrepareForQuit: (listener: (event: TerminalPrepareForQuitEvent) => void) => Unsubscribe
+  }
+
+  interface ElectronApi {
+    ping: () => Promise<PingResponse>
+    server: ServerApi
+    ssh: SshApi
+    dialog: DialogApi
+    shell: ShellApi
+    log: LogApi
+    settings: SettingsApi
+    trigger: TriggerApi
+    update: UpdateApi
+    localFile: LocalFileApi
+    terminal: TerminalApi
+  }
+
+  interface Window {
+    electronAPI: ElectronApi
+    __electronAPIBridge?: ElectronApi
+  }
+}
+
+declare module '*.vue' {
+  import type { DefineComponent } from 'vue'
+
+  const component: DefineComponent<object, object, unknown>
+  export default component
+}
+
+export {}

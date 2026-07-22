@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": false,
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": ".test-dist",
+    "rootDir": ".",
+    "tsBuildInfoFile": ".test-dist/tsconfig.test.tsbuildinfo"
+  },
+  "include": [
+    "src/shared/**/*.ts",
+    "src/main/ssh/**/*.ts",
+    "src/main/services/server-service.ts",
+    "src/renderer/src/types/file-browser.ts",
+    "test/**/*.ts"
+  ]
+}

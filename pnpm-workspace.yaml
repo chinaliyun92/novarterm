@@ -1,0 +1,8 @@
+allowBuilds:
+  '@parcel/watcher': false
+  better-sqlite3: true
+  cpu-features: false
+  electron: true
+  esbuild: false
+  node-pty: true
+  ssh2: false

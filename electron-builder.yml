@@ -1,0 +1,27 @@
+appId: com.novarterm.app
+productName: NovarTerm
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: resources/AppIcon.png
+    to: AppIcon.png
+asar: true
+publish:
+  provider: github
+  owner: chinaliyun92
+  repo: novarterm
+mac:
+  icon: build/icon.icns
+  target:
+    - zip
+  category: public.app-category.developer-tools
+win:
+  icon: build/icon.ico
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage

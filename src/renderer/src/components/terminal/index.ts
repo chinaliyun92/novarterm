@@ -1,0 +1,5 @@
+export { default as CloseConfirmDialog } from './CloseConfirmDialog.vue'
+export { default as SessionTabs } from './SessionTabs.vue'
+export { default as SplitTerminalContainer } from './SplitTerminalContainer.vue'
+export { default as TerminalWorkspace } from './TerminalWorkspace.vue'
+export { default as XtermTerminal } from './XtermTerminal.vue'

@@ -9,6 +9,9 @@ extraResources:
   - from: resources/AppIcon.png
     to: AppIcon.png
 asar: true
+# cpu-features (optional ssh2 dep) fails to rebuild under current node-gyp; app natives are
+# rebuilt via postinstall / rebuild:native for better-sqlite3 and node-pty instead.
+npmRebuild: false
 publish:
   provider: github
   owner: chinaliyun92

@@ -28,6 +28,7 @@ interface DownloadProgressLike {
 let initialized = false
 let lastCheckWasManual = false
 let isDownloading = false
+let installingUpdate = false
 let currentState: NativeUpdateState = {
   phase: 'idle',
   currentVersion: '0.0.0',
@@ -192,7 +193,24 @@ export function downloadUpdateWithInstaller(): Promise<string[]> {
 }
 
 export function quitAndInstallUpdate(): void {
-  autoUpdater.quitAndInstall(false, true)
+  installingUpdate = true
+  // Defer so the IPC invoke can return to the renderer before quit begins.
+  setImmediate(() => {
+    try {
+      autoUpdater.quitAndInstall(false, true)
+    } catch (error) {
+      installingUpdate = false
+      const message = error instanceof Error ? error.message : String(error)
+      setState({
+        phase: 'error',
+        errorMessage: message,
+      })
+    }
+  })
+}
+
+export function isInstallingUpdate(): boolean {
+  return installingUpdate
 }
 
 export function getNativeUpdateState(): NativeUpdateState {

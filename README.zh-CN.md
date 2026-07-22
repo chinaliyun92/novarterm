@@ -16,10 +16,9 @@ NovarTerm 当前详细能力路线图如下：
 |---|---|---|
 | AI | 支持使用 `Command + K` 快速打开/关闭 AI Command Bar，并可在同一工作区持续对话。 | ✅ |
 | AI | 在 Shell 中右键 `Explain with AI` 可自动携带终端上下文发起解释。 | ✅ |
-| AI | 终端异常输出支持智能识别，并提供 `Explain Error` 与 `Debug With AI` 快捷入口。 | ✅ |
 | AI | 统一工作流内支持 `Explain`、`Run`、`Insert` 三种动作模式。 | ✅ |
-| AI | 内置基础 AI 模型，支持用户添加自定义模型。 | ✅ |
-| AI | AI Command Bar 支持快速切换自定义模型。 | ✅ |
+| AI | 用户在设置中自行添加 AI 平台与 API Key；不再提供内置默认模型。 | ✅ |
+| AI | AI Command Bar 支持在已配置模型之间快速切换。 | ✅ |
 | AI | 支持在终端内快速辅助生成命令（内容以 `>` 开头）。 | ✅ |
 | Workspace | 多分屏支持水平分屏、垂直分屏与关闭当前分屏。 | ✅ |
 | Workspace | 支持拖拽 pane 标题栏调整分屏布局，并在上/下/左/右位置提供放置提示。 | ✅ |

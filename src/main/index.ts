@@ -26,6 +26,7 @@ import {
   checkForUpdatesWithInstaller,
   downloadUpdateWithInstaller,
   getNativeUpdateState,
+  isInstallingUpdate,
   isNativeUpdaterAvailable,
   setLastCheckWasManual,
   setupAutoUpdater,
@@ -765,6 +766,12 @@ app.on('before-quit', (event) => {
   clearAutoUpdateCheckTimer()
   // 不在此处移除 IPC 或关闭 db，否则窗口关闭时渲染进程的持久化调用会报 "No handler registered"
 
+  // quitAndInstall must not be blocked by terminal flush / preventDefault.
+  if (isInstallingUpdate()) {
+    logger.info('app', 'before-quit allowing quit for update install')
+    return
+  }
+
   if (quitAfterTerminalFlush) {
     return
   }
@@ -805,6 +812,22 @@ app.on('before-quit', (event) => {
 
 app.on('will-quit', (event) => {
   if (shutdownComplete) {
+    return
+  }
+
+  // Allow electron-updater to finish quitAndInstall without being deferred by async cleanup.
+  if (isInstallingUpdate()) {
+    logger.info('app', 'will-quit allowing quit for update install')
+    try {
+      if (db) {
+        db.close()
+        db = null
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.warn('db', `database close during update install failed: ${message}`)
+    }
+    shutdownComplete = true
     return
   }
 

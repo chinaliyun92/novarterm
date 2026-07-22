@@ -16,10 +16,9 @@ Detailed capability roadmap for NovarTerm:
 |---|---|---|
 | AI | `Command + K` quickly opens/closes AI Command Bar, with continuous conversation in the same workspace. | ✅ |
 | AI | Shell right-click `Explain with AI` automatically sends context-aware prompts from terminal content. | ✅ |
-| AI | Smart error detection in terminal output surfaces quick actions like `Explain Error` and `Debug With AI`. | ✅ |
 | AI | Action modes `Explain`, `Run`, and `Insert` are available in one unified AI workflow. | ✅ |
-| AI | Built-in baseline AI models are provided, and users can add custom models. | ✅ |
-| AI | AI Command Bar supports quickly switching custom models. | ✅ |
+| AI | Users add their own AI platforms and API Keys in Settings; no built-in default model is provided. | ✅ |
+| AI | AI Command Bar supports quickly switching among configured models. | ✅ |
 | AI | Terminal inline assistant can quickly generate commands when input starts with `>`. | ✅ |
 | Workspace | Multi-pane workflow supports horizontal split, vertical split, and close focused pane. | ✅ |
 | Workspace | Drag pane headers to rearrange the split layout, with drop previews for top/left/right/bottom placement. | ✅ |
